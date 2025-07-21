@@ -82,6 +82,59 @@ LOGGING_CONFIG = {
             'level': 'TRACE',
             'propagate': False
         },
+        
+        # Application loggers
+        'src': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.storage': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.routes': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.routes.ctc': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        # Init modules loggers
+        'src.init_products': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.init_brands': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.init_ctc': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.init_distributors': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.init_ctc_attributes': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
+        'src.init_features_benefits': {
+            'handlers': ['default', 'file_handler'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
 
     },
 }

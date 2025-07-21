@@ -1,17 +1,26 @@
 import asyncio
-from typing import List, Optional, Literal, Dict, Any, Union, Tuple
+from typing import List, Optional, Literal, Dict, Any, Union, Tuple, get_args, get_origin
 from sqlalchemy import select, text, and_, or_, func, desc, asc
 from sqlalchemy.orm import joinedload, selectinload
 from datetime import datetime
 from .database import get_async_session
 from .db_models import (
-    ProductModel, User, PriceLevel, RebateAgreement, RebateAgreementProduct, 
+    ProductModel, User, PriceLevel as PriceLevelModel, MyPrice as MyPriceModel, RebateAgreement, RebateAgreementProduct, 
     RebateTier, RebateClaim,
     # New CTC models
     CTCClass, CTCType, CTCCategory, CTCAttributeGroup, CTCDataType, 
     CTCUnitOfMeasure, CTCAttribute, CategoryAttribute,
     # Distributor and Brand models
-    Distributor, Brand
+    Distributor, Brand,
+    # Features and Benefits models
+    ClassFeaturesBenefits, TypeFeaturesBenefits, CategoryFeaturesBenefits,
+    PriceLevelType, DealSource, DealType,
+    # New models
+    Purchaser, Contact, Address,
+    # CTC Link-Types models
+    CTCTypeLink, CTCTypeOption,
+    # NEW DEAL MODELS
+    DealValueType, DealCalculation
 )
 from .models import (
     Product,
@@ -30,6 +39,59 @@ from .models import (
     ProductCreateResult,
     FuzzyMatchInfo,
     BulkProductCreateResult,
+    # Pricing models
+    PriceLevel,
+    InsertPriceLevel,
+    MyPrice,
+    # Features and Benefits models
+    ClassFeaturesBenefitsCreate,
+    ClassFeaturesBenefitsRead,
+    ClassFeaturesBenefitsUpdate,
+    TypeFeaturesBenefitsCreate,
+    TypeFeaturesBenefitsRead,
+    TypeFeaturesBenefitsUpdate,
+    CategoryFeaturesBenefitsCreate,
+    CategoryFeaturesBenefitsRead,
+    CategoryFeaturesBenefitsUpdate,
+    PriceLevelTypeCreate,
+    PriceLevelTypeRead,
+    PriceLevelTypeUpdate,
+    DealSourceRead,
+    DealSourceCreate,
+    DealSourceUpdate,
+    DealTypeRead,
+    DealTypeCreate,
+    DealTypeUpdate,
+    # New models
+    PurchaserRead,
+    PurchaserCreate,
+    PurchaserUpdate,
+    ContactRead,
+    ContactCreate,
+    ContactUpdate,
+    AddressRead,
+    AddressCreate,
+    AddressUpdate,
+    # CTC Link-Types models
+    CTCTypeLinkCreate,
+    CTCTypeLinkRead,
+    CTCTypeOptionCreate,
+    CTCTypeOptionRead,
+    CTCTypeLinkQuery,
+    CTCTypeOptionQuery,
+    CTCTypeLinkResponse,
+    CTCTypeLinksResponse,
+    CTCTypeOptionResponse,
+    CTCTypeOptionsResponse,
+    CTCTypeLinkStatistics,
+    CTCTypeOptionStatistics,
+    # NEW DEAL MODELS
+    DealValueTypeCreate,
+    DealValueTypeRead,
+    DealValueTypeUpdate,
+    DealCalculationCreate,
+    DealCalculationRead,
+    DealCalculationUpdate
 )
 import logging 
 import uuid
@@ -38,11 +100,23 @@ import pandas as pd
 from decimal import Decimal
 from difflib import SequenceMatcher
 import re
+from datetime import datetime, timedelta
+
 
 logger = logging.getLogger('uvicorn.error')
 
-def to_schema(self, obj, schema):
-        return schema(**obj.model_dump())
+
+def convert_product_model(query):
+    output = query.all()
+    return [to_schema(i, Product) for i in output]
+
+
+
+def to_schema(obj, schema):
+    """Convert SQLAlchemy object to Pydantic schema using built-in model_validate"""
+    if obj is None:
+        return None
+    return schema.model_validate(obj, from_attributes=True)
 
 def normalize_name(name: str) -> str:
     """Normalize a name for comparison by removing extra spaces and converting to lowercase"""
@@ -114,19 +188,64 @@ class SQLStorage:
 
     async def get_product(self, pid: int) -> Optional[Product]:
         async with get_async_session() as session:
-            result = await session.get(ProductModel, pid)
-            return to_schema(result, Product) if result else None
+            result = await session.execute(
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.distributor).selectinload(Distributor.purchaser),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.default_contact)
+                )
+                .where(ProductModel.id == pid)
+            )
+            product = result.scalar_one_or_none()
+            
+            # TODO: Uncomment this when we have a way to handle the relationship fields
+            # return to_schema(result, Product) if result else None 
+
+            # Log the raw SQLAlchemy ORM object as a dict before to_schema
+            if product:
+                def safe_serialize(obj):
+                    try:
+                        return str(obj)
+                    except Exception:
+                        return None
+                logger.info("Raw ORM row: " + json.dumps({k: safe_serialize(v) for k, v in product.__dict__.items() if not k.startswith('_')}, indent=2, default=str))
+            product_obj = to_schema(product, Product) if product else None
+            if product_obj:
+                logger.info("Product JSON: " + json.dumps(product_obj.model_dump(), indent=2, default=str))
+            return product_obj
 
     async def get_product_by_code(self, code: str) -> Optional[Product]:
         async with get_async_session() as session:
-            stmt = select(ProductModel).where(ProductModel.product_code == code)
+            stmt = (
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.price_levels),
+                    selectinload(ProductModel.my_price),
+                    selectinload(ProductModel.brand),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.purchaser),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.default_contact)
+                )
+                .where(ProductModel.product_code == code)
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
-            return to_schema(row, Product) if row else None
+            if row:
+                logger.info(f"Found product with ID: {row.id}")
+                logger.info(f"Product UUID: {row.uuid}")
+                logger.info(f"Product Code: {row.product_code}")
+                return to_schema(row, Product)
+            return None
     
     async def get_product_by_uuid(self, uuid: str) -> Optional[Product]:
         async with get_async_session() as session:
-            stmt = select(ProductModel).where(ProductModel.uuid == uuid)
+            stmt = (
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.distributor).selectinload(Distributor.purchaser),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.default_contact)
+                )
+                .where(ProductModel.uuid == uuid)
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return to_schema(row, Product) if row else None
@@ -135,14 +254,105 @@ class SQLStorage:
         q = f"%{query.lower()}%"
         logger.info(f"Printing query {q}")
         async with get_async_session() as session:
-            stmt = select(ProductModel).where(
-                (ProductModel.product_name.ilike(q))
-                | (ProductModel.product_code.ilike(q))
-                | (ProductModel.brand_name.ilike(q))
-                | (ProductModel.category_name.ilike(q))
+            stmt = (
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.price_levels),
+                    selectinload(ProductModel.my_price),
+                    selectinload(ProductModel.brand),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.purchaser),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.default_contact)
+                )
+                .where(
+                    (ProductModel.product_name.ilike(q))
+                    | (ProductModel.product_code.ilike(q))
+                    | (ProductModel.brand_name.ilike(q))
+                    | (ProductModel.category_name.ilike(q))
+                )
             )
             result = await session.execute(stmt)
             return [to_schema(p, Product) for p in result.scalars().all()]
+
+    async def get_products_by_core_range(
+        self,
+        distributor_id: Optional[int] = None,
+        brand_id: Optional[int] = None,
+        core_groups: Optional[List[str]] = None,
+        class_id: Optional[int] = None,
+        type_id: Optional[int] = None,
+        category_id: Optional[int] = None
+    ) -> List[Product]:
+        """
+        Get products filtered by core range parameters.
+        
+        Args:
+            distributor_id: Filter by distributor ID
+            brand_id: Filter by brand ID
+            core_groups: List of core group codes to filter by (e.g., ["A", "B", "C"])
+            class_id: Filter by CTC class ID
+            type_id: Filter by CTC type ID
+            category_id: Filter by CTC category ID
+            
+        Returns:
+            List of products matching the criteria
+        """
+        async with get_async_session() as session:
+            # Start with base query
+            stmt = (
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.price_levels),
+                    selectinload(ProductModel.my_price),
+                    selectinload(ProductModel.brand),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.purchaser),
+                    selectinload(ProductModel.distributor).selectinload(Distributor.default_contact)
+                )
+            )
+            
+            # Build conditions
+            conditions = []
+            
+            # Filter by distributor
+            if distributor_id is not None:
+                conditions.append(ProductModel.distributor_id == distributor_id)
+            
+            # Filter by brand
+            if brand_id is not None:
+                conditions.append(ProductModel.brand_id == brand_id)
+            
+            # Filter by core groups
+            if core_groups and len(core_groups) > 0:
+                conditions.append(ProductModel.core_group.in_(core_groups))
+            
+            # Filter by CTC hierarchy (class, type, category)
+            if class_id is not None or type_id is not None or category_id is not None:
+                # Join with CTC categories table
+                stmt = stmt.join(CTCCategory, ProductModel.id == CTCCategory.product_id)
+                
+                if class_id is not None:
+                    # Join with types and classes to filter by class
+                    stmt = stmt.join(CTCType, CTCCategory.type_id == CTCType.id)
+                    conditions.append(CTCType.class_id == class_id)
+                
+                if type_id is not None:
+                    # If we haven't already joined with types, do it now
+                    if class_id is None:
+                        stmt = stmt.join(CTCType, CTCCategory.type_id == CTCType.id)
+                    conditions.append(CTCCategory.type_id == type_id)
+                
+                if category_id is not None:
+                    conditions.append(CTCCategory.id == category_id)
+            
+            # Apply conditions if any
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            
+            # Execute query
+            result = await session.execute(stmt)
+            products = result.scalars().all()
+            
+            # Convert to Product models
+            return [to_schema(p, Product) for p in products]
 
     async def get_brand_by_name(self, name: str) -> Optional[BrandRead]:
         """Find brand by exact name match (case-insensitive)"""
@@ -155,7 +365,14 @@ class SQLStorage:
     async def get_distributor_by_name(self, name: str) -> Optional[DistributorRead]:
         """Find distributor by exact name match (case-insensitive)"""
         async with get_async_session() as session:
-            stmt = select(Distributor).where(Distributor.name.ilike(name))
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(Distributor.name.ilike(name))
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return to_schema(row, DistributorRead) if row else None
@@ -193,7 +410,13 @@ class SQLStorage:
         """
         async with get_async_session() as session:
             # Get all distributors
-            stmt = select(Distributor)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+            )
             result = await session.execute(stmt)
             distributors = result.scalars().all()
             
@@ -219,7 +442,14 @@ class SQLStorage:
     async def get_distributor_by_name(self, name: str) -> Optional[DistributorRead]:
         """Find distributor by exact name match (case-insensitive)"""
         async with get_async_session() as session:
-            stmt = select(Distributor).where(Distributor.name.ilike(name))
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(Distributor.name.ilike(name))
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return to_schema(row, DistributorRead) if row else None
@@ -257,7 +487,13 @@ class SQLStorage:
         """
         async with get_async_session() as session:
             # Get all distributors
-            stmt = select(Distributor)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+            )
             result = await session.execute(stmt)
             distributors = result.scalars().all()
             
@@ -276,7 +512,13 @@ class SQLStorage:
         fuzzy_matches = []
         async with get_async_session() as session:
             # Distributor matching
-            stmt = select(Distributor)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+            )
             result = await session.execute(stmt)
             distributors = result.scalars().all()
             distributor = None
@@ -364,30 +606,175 @@ class SQLStorage:
             await session.delete(obj)
             await session.commit()
             return True
-    
+
+    # Price Level operations
+    async def get_product_price_levels(self, product_id: int) -> List[PriceLevel]:
+        async with get_async_session() as session:
+            stmt = select(PriceLevelModel).where(PriceLevelModel.product_id == product_id)
+            result = await session.execute(stmt)
+            price_levels = result.scalars().all()
+            return [to_schema(pl, PriceLevel) for pl in price_levels]
+
+    async def get_price_level(self, price_id: int) -> Optional[PriceLevel]:
+        async with get_async_session() as session:
+            result = await session.get(PriceLevelModel, price_id)
+            return to_schema(result, PriceLevel) if result else None
+
+    async def create_price_level(self, product_id: int, data: InsertPriceLevel) -> PriceLevel:
+        """Create a new price level for a product"""
+        async with get_async_session() as session:
+            # Verify product exists
+            product = await session.get(ProductModel, product_id)
+            if not product:
+                raise ValueError(f"Product with ID {product_id} not found")
+            
+            price_data = data.model_dump()
+            price_data['product_id'] = product_id
+            # Remove fields that don't exist in the database model
+            price_data.pop('uuid', None)  # PriceLevel doesn't have uuid field
+            price_data.pop('created_at', None)  # Let SQLAlchemy handle this
+            price_data.pop('updated_at', None)  # Let SQLAlchemy handle this
+            
+            obj = PriceLevelModel(**price_data)
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, PriceLevel)
+
+    async def update_price_level(self, price_id: int, data: dict) -> Optional[PriceLevel]:
+        """Update a specific price level"""
+        async with get_async_session() as session:
+            obj = await session.get(PriceLevelModel, price_id)
+            if not obj:
+                return None
+            
+            # Update only provided fields
+            for k, v in data.items():
+                if hasattr(obj, k):
+                    setattr(obj, k, v)
+            
+            # Let SQLAlchemy handle the updated_at field automatically
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, PriceLevel)
+
+    async def delete_price_level(self, price_id: int) -> bool:
+        """Delete a specific price level"""
+        async with get_async_session() as session:
+            obj = await session.get(PriceLevelModel, price_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # MyPrice operations
+    async def get_product_my_price(self, product_id: int) -> Optional[MyPrice]:
+        """Get MyPrice for a product"""
+        async with get_async_session() as session:
+            stmt = select(MyPriceModel).where(MyPriceModel.product_id == product_id)
+            result = await session.execute(stmt)
+            obj = result.scalar_one_or_none()
+            return to_schema(obj, MyPrice) if obj else None
+
+    async def create_or_update_my_price(self, product_id: int, data: dict) -> MyPrice:
+        """Create or update MyPrice for a product"""
+        async with get_async_session() as session:
+            # Verify product exists
+            product = await session.get(ProductModel, product_id)
+            if not product:
+                raise ValueError(f"Product with ID {product_id} not found")
+            
+            # Check if MyPrice already exists
+            stmt = select(MyPriceModel).where(MyPriceModel.product_id == product_id)
+            result = await session.execute(stmt)
+            obj = result.scalar_one_or_none()
+            
+            if obj:
+                # Update existing MyPrice
+                for k, v in data.items():
+                    if hasattr(obj, k):
+                        setattr(obj, k, v)
+                # Let SQLAlchemy handle the modified_at field automatically
+            else:
+                # Create new MyPrice
+                price_data = data.copy()
+                price_data['product_id'] = product_id
+                # Remove fields that don't exist in the database model
+                price_data.pop('uuid', None)  # MyPrice has uuid but let SQLAlchemy handle it
+                price_data.pop('created_at', None)  # Let SQLAlchemy handle this
+                price_data.pop('modified_at', None)  # Let SQLAlchemy handle this
+                
+                obj = MyPriceModel(**price_data)
+                session.add(obj)
+            
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, MyPrice)
+
+    async def delete_my_price(self, product_id: int) -> bool:
+        """Delete MyPrice for a product"""
+        async with get_async_session() as session:
+            stmt = select(MyPriceModel).where(MyPriceModel.product_id == product_id)
+            result = await session.execute(stmt)
+            obj = result.scalar_one_or_none()
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
 
 
     # Distributor operations
     async def get_distributors(self) -> List[DistributorRead]:
         async with get_async_session() as session:
-            result = await session.execute(select(Distributor))
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+            )
+            result = await session.execute(stmt)
             return [to_schema(row, DistributorRead) for row in result.scalars().all()]
 
     async def get_distributor(self, distributor_id: int) -> Optional[DistributorRead]:
         async with get_async_session() as session:
-            result = await session.get(Distributor, distributor_id)
-            return to_schema(result, DistributorRead) if result else None
+            result = await session.execute(
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(Distributor.id == distributor_id)
+            )
+            distributor = result.scalar_one_or_none()
+            return to_schema(distributor, DistributorRead) if distributor else None
 
     async def get_distributor_by_uuid(self, uuid: str) -> Optional[DistributorRead]:
         async with get_async_session() as session:
-            stmt = select(Distributor).where(Distributor.uuid == uuid)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(Distributor.uuid == uuid)
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return to_schema(row, DistributorRead) if row else None
 
     async def get_distributor_by_code(self, code: str) -> Optional[DistributorRead]:
         async with get_async_session() as session:
-            stmt = select(Distributor).where(Distributor.code == code)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(Distributor.code == code)
+            )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return to_schema(row, DistributorRead) if row else None
@@ -434,13 +821,227 @@ class SQLStorage:
         """Search distributors by name, code, or store"""
         q = f"%{query.lower()}%"
         async with get_async_session() as session:
-            stmt = select(Distributor).where(
-                (Distributor.name.ilike(q))
-                | (Distributor.code.ilike(q))
-                | (Distributor.store.ilike(q))
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+                .where(
+                    (Distributor.name.ilike(q))
+                    | (Distributor.code.ilike(q))
+                    | (Distributor.store.ilike(q))
+                )
             )
             result = await session.execute(stmt)
             return [to_schema(row, DistributorRead) for row in result.scalars().all()]
+
+    # Purchaser operations
+    async def get_purchasers(self) -> List[PurchaserRead]:
+        async with get_async_session() as session:
+            result = await session.execute(select(Purchaser))
+            return [to_schema(row, PurchaserRead) for row in result.scalars().all()]
+
+    async def get_purchaser(self, purchaser_id: int) -> Optional[PurchaserRead]:
+        async with get_async_session() as session:
+            result = await session.get(Purchaser, purchaser_id)
+            return to_schema(result, PurchaserRead) if result else None
+
+    async def get_purchaser_by_uuid(self, uuid: str) -> Optional[PurchaserRead]:
+        async with get_async_session() as session:
+            stmt = select(Purchaser).where(Purchaser.uuid == uuid)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, PurchaserRead) if row else None
+
+    async def get_purchaser_by_code(self, code: str) -> Optional[PurchaserRead]:
+        async with get_async_session() as session:
+            stmt = select(Purchaser).where(Purchaser.code == code)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, PurchaserRead) if row else None
+
+    async def create_purchaser(self, data: PurchaserCreate) -> PurchaserRead:
+        async with get_async_session() as session:
+            purchaser_data = data.model_dump()
+            purchaser_data['uuid'] = str(uuid.uuid4())
+            purchaser_data['modified'] = datetime.utcnow()
+            purchaser_data['created'] = datetime.utcnow()
+            
+            obj = Purchaser(**purchaser_data)
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, PurchaserRead)
+
+    async def update_purchaser(self, purchaser_id: int, data: PurchaserUpdate) -> Optional[PurchaserRead]:
+        async with get_async_session() as session:
+            obj = await session.get(Purchaser, purchaser_id)
+            if not obj:
+                return None
+            
+            update_data = data.model_dump(exclude_unset=True)
+            update_data['modified'] = datetime.utcnow()
+            
+            for k, v in update_data.items():
+                setattr(obj, k, v)
+            
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, PurchaserRead)
+
+    async def delete_purchaser(self, purchaser_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(Purchaser, purchaser_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # Contact operations
+    async def get_contacts(self) -> List[ContactRead]:
+        async with get_async_session() as session:
+            result = await session.execute(select(Contact))
+            return [to_schema(row, ContactRead) for row in result.scalars().all()]
+
+    async def get_contact(self, contact_id: int) -> Optional[ContactRead]:
+        async with get_async_session() as session:
+            result = await session.get(Contact, contact_id)
+            return to_schema(result, ContactRead) if result else None
+
+    async def get_contact_by_uuid(self, uuid: str) -> Optional[ContactRead]:
+        async with get_async_session() as session:
+            stmt = select(Contact).where(Contact.uuid == uuid)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, ContactRead) if row else None
+
+    async def get_contact_by_code(self, code: str) -> Optional[ContactRead]:
+        async with get_async_session() as session:
+            stmt = select(Contact).where(Contact.code == code)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, ContactRead) if row else None
+
+    async def get_contacts_by_distributor(self, distributor_id: int) -> List[ContactRead]:
+        async with get_async_session() as session:
+            stmt = select(Contact).where(Contact.distributor_id == distributor_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, ContactRead) for row in result.scalars().all()]
+
+    async def create_contact(self, data: ContactCreate) -> ContactRead:
+        async with get_async_session() as session:
+            contact_data = data.model_dump()
+            contact_data['uuid'] = str(uuid.uuid4())
+            contact_data['modified'] = datetime.utcnow()
+            contact_data['created'] = datetime.utcnow()
+            
+            obj = Contact(**contact_data)
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, ContactRead)
+
+    async def update_contact(self, contact_id: int, data: ContactUpdate) -> Optional[ContactRead]:
+        async with get_async_session() as session:
+            obj = await session.get(Contact, contact_id)
+            if not obj:
+                return None
+            
+            update_data = data.model_dump(exclude_unset=True)
+            update_data['modified'] = datetime.utcnow()
+            
+            for k, v in update_data.items():
+                setattr(obj, k, v)
+            
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, ContactRead)
+
+    async def delete_contact(self, contact_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(Contact, contact_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # Address operations
+    async def get_addresses(self) -> List[AddressRead]:
+        async with get_async_session() as session:
+            result = await session.execute(select(Address))
+            return [to_schema(row, AddressRead) for row in result.scalars().all()]
+
+    async def get_address(self, address_id: int) -> Optional[AddressRead]:
+        async with get_async_session() as session:
+            result = await session.get(Address, address_id)
+            return to_schema(result, AddressRead) if result else None
+
+    async def get_address_by_uuid(self, uuid: str) -> Optional[AddressRead]:
+        async with get_async_session() as session:
+            stmt = select(Address).where(Address.uuid == uuid)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, AddressRead) if row else None
+
+    async def get_address_by_code(self, code: str) -> Optional[AddressRead]:
+        async with get_async_session() as session:
+            stmt = select(Address).where(Address.code == code)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, AddressRead) if row else None
+
+    async def get_addresses_by_distributor(self, distributor_id: int) -> List[AddressRead]:
+        async with get_async_session() as session:
+            stmt = select(Address).where(Address.distributor_id == distributor_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, AddressRead) for row in result.scalars().all()]
+
+    async def get_addresses_by_contact(self, contact_id: int) -> List[AddressRead]:
+        async with get_async_session() as session:
+            stmt = select(Address).where(Address.contact_id == contact_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, AddressRead) for row in result.scalars().all()]
+
+    async def create_address(self, data: AddressCreate) -> AddressRead:
+        async with get_async_session() as session:
+            address_data = data.model_dump()
+            address_data['uuid'] = str(uuid.uuid4())
+            address_data['modified'] = datetime.utcnow()
+            address_data['created'] = datetime.utcnow()
+            
+            obj = Address(**address_data)
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, AddressRead)
+
+    async def update_address(self, address_id: int, data: AddressUpdate) -> Optional[AddressRead]:
+        async with get_async_session() as session:
+            obj = await session.get(Address, address_id)
+            if not obj:
+                return None
+            
+            update_data = data.model_dump(exclude_unset=True)
+            update_data['modified'] = datetime.utcnow()
+            
+            for k, v in update_data.items():
+                setattr(obj, k, v)
+            
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, AddressRead)
+
+    async def delete_address(self, address_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(Address, address_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
 
     # Brand operations
     async def get_brands(self) -> List[BrandRead]:
@@ -662,7 +1263,10 @@ class SQLStorage:
         self, 
         agreement_type: Optional[str] = None,
         distributor_id: Optional[int] = None,
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        deal_type_id: Optional[int] = None,
+        deal_source_id: Optional[int] = None,
+        store: Optional[str] = None
     ) -> List[RebateAgreementRead]:
         """Get rebate agreements with optional filtering."""
         async with get_async_session() as session:
@@ -671,9 +1275,15 @@ class SQLStorage:
             if agreement_type:
                 stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
             if distributor_id:
-                stmt = stmt.where(RebateAgreement.party_id == distributor_id)
+                stmt = stmt.where(RebateAgreement.distributor_id == distributor_id)
             if status:
                 stmt = stmt.where(RebateAgreement.status == status)
+            if deal_type_id:
+                stmt = stmt.where(RebateAgreement.deal_type_id == deal_type_id)
+            if deal_source_id:
+                stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
+            if store:
+                stmt = stmt.where(RebateAgreement.store == store)
             
             agreements = (await session.execute(stmt)).scalars().all()
             return [await self._build_rebate_agreement_response(session, agreement) for agreement in agreements]
@@ -803,13 +1413,22 @@ class SQLStorage:
             tier_dict['from_quantity'] = None
             tier_dict['to_quantity'] = None
         tier_dict['rebate_agreement_id'] = agreement_id
+        
+        # Handle new deal-specific fields
+        # These fields are optional, so we only set them if they exist
+        deal_fields = ['value_type_id', 'calculated_on_price_level_id', 'value_stor', 
+                      'value_stor_incl', 'value_hoff', 'value_hoff_incl']
+        for field in deal_fields:
+            if field in tier_dict:
+                tier_dict[field] = tier_dict.pop(field)
+        
         return RebateTier(**tier_dict)
     
     async def _check_overlapping_agreements(self, session, data: RebateAgreementCreate):
         """Check for overlapping agreements for the same distributor and products."""
         # This is a simplified check - in a real implementation, you might want more sophisticated logic
         stmt = select(RebateAgreement).where(
-            RebateAgreement.party_id == data.distributor_id,
+            RebateAgreement.distributor_id == data.distributor_id,  # Fixed: use distributor_id
             RebateAgreement.agreement_type == data.agreement_type,
             RebateAgreement.status == "active"
         )
@@ -858,7 +1477,7 @@ class SQLStorage:
         return RebateAgreementRead(
             id=agreement.id,
             agreement_type=agreement.agreement_type,
-            distributor_id=agreement.party_id,  # Map party_id back to distributor_id
+            distributor_id=agreement.distributor_id,  # Fixed: use distributor_id instead of party_id
             description=agreement.description,
             start_date=agreement.start_date,
             end_date=agreement.end_date,
@@ -879,7 +1498,13 @@ class SQLStorage:
         df = pd.DataFrame([p.model_dump() for p in products])
         # Preload all brands and distributors
         async with get_async_session() as session:
-            stmt = select(Distributor)
+            stmt = (
+                select(Distributor)
+                .options(
+                    selectinload(Distributor.purchaser),
+                    selectinload(Distributor.default_contact)
+                )
+            )
             result = await session.execute(stmt)
             distributors = result.scalars().all()
             stmt = select(Brand)
@@ -953,5 +1578,2167 @@ class SQLStorage:
             created.append(ProductCreateResult(product=to_schema(obj, Product), fuzzy_matches=fuzzy_matches))
         return BulkProductCreateResult(created=created, failed=failed)
 
+    # === FEATURES & BENEFITS CRUD ===
+    # --- Class Level ---
+    async def get_class_features_benefits(self, class_id: int) -> list:
+        async with get_async_session() as session:
+            stmt = select(ClassFeaturesBenefits).where(ClassFeaturesBenefits.class_id == class_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, ClassFeaturesBenefitsRead) for row in result.scalars().all()]
+
+    async def create_class_features_benefit(self, data: ClassFeaturesBenefitsCreate) -> ClassFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = ClassFeaturesBenefits(**data.model_dump())
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, ClassFeaturesBenefitsRead)
+
+    async def update_class_features_benefit(self, fb_id: int, data: ClassFeaturesBenefitsUpdate) -> ClassFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = await session.get(ClassFeaturesBenefits, fb_id)
+            if not obj:
+                return None
+            for k, v in data.model_dump(exclude_unset=True).items():
+                setattr(obj, k, v)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, ClassFeaturesBenefitsRead)
+
+    async def delete_class_features_benefit(self, fb_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(ClassFeaturesBenefits, fb_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # --- Type Level ---
+    async def get_type_features_benefits(self, type_id: int) -> list:
+        async with get_async_session() as session:
+            stmt = select(TypeFeaturesBenefits).where(TypeFeaturesBenefits.type_id == type_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, TypeFeaturesBenefitsRead) for row in result.scalars().all()]
+
+    async def create_type_features_benefit(self, data: TypeFeaturesBenefitsCreate) -> TypeFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = TypeFeaturesBenefits(**data.model_dump())
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, TypeFeaturesBenefitsRead)
+
+    async def update_type_features_benefit(self, fb_id: int, data: TypeFeaturesBenefitsUpdate) -> TypeFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = await session.get(TypeFeaturesBenefits, fb_id)
+            if not obj:
+                return None
+            for k, v in data.model_dump(exclude_unset=True).items():
+                setattr(obj, k, v)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, TypeFeaturesBenefitsRead)
+
+    async def delete_type_features_benefit(self, fb_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(TypeFeaturesBenefits, fb_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # --- Category Level ---
+    async def get_category_features_benefits(self, category_id: int) -> list:
+        async with get_async_session() as session:
+            stmt = select(CategoryFeaturesBenefits).where(CategoryFeaturesBenefits.category_id == category_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, CategoryFeaturesBenefitsRead) for row in result.scalars().all()]
+
+    async def create_category_features_benefit(self, data: CategoryFeaturesBenefitsCreate) -> CategoryFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = CategoryFeaturesBenefits(**data.model_dump())
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, CategoryFeaturesBenefitsRead)
+
+    async def update_category_features_benefit(self, fb_id: int, data: CategoryFeaturesBenefitsUpdate) -> CategoryFeaturesBenefitsRead:
+        async with get_async_session() as session:
+            obj = await session.get(CategoryFeaturesBenefits, fb_id)
+            if not obj:
+                return None
+            for k, v in data.model_dump(exclude_unset=True).items():
+                setattr(obj, k, v)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, CategoryFeaturesBenefitsRead)
+
+    async def delete_category_features_benefit(self, fb_id: int) -> bool:
+        async with get_async_session() as session:
+            obj = await session.get(CategoryFeaturesBenefits, fb_id)
+            if not obj:
+                return False
+            await session.delete(obj)
+            await session.commit()
+            return True
+
+    # --- Category Attribute CRUD ---
+    async def get_category_attributes(self, category_id: int) -> list:
+        from .models import CategoryAttributeRead
+        async with get_async_session() as session:
+            stmt = select(CategoryAttribute).where(CategoryAttribute.category_id == category_id)
+            result = await session.execute(stmt)
+            return [to_schema(row, CategoryAttributeRead) for row in result.scalars().all()]
+
+    async def create_category_attribute(self, data):
+        from .models import CategoryAttributeRead, CategoryAttributeCreate
+        async with get_async_session() as session:
+            obj = CategoryAttribute(**data.model_dump())
+            session.add(obj)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, CategoryAttributeRead)
+
+    async def update_category_attribute(self, attr_id: int, data):
+        from .models import CategoryAttributeRead, CategoryAttributeUpdate
+        async with get_async_session() as session:
+            obj = await session.get(CategoryAttribute, attr_id)
+            if not obj:
+                return None
+            for k, v in data.model_dump(exclude_unset=True).items():
+                setattr(obj, k, v)
+            await session.commit()
+            await session.refresh(obj)
+            return to_schema(obj, CategoryAttributeRead)
+
+    async def delete_category_attribute(self, attr_id: int) -> bool:
+        """Delete a category attribute"""
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CategoryAttribute).where(CategoryAttribute.id == attr_id)
+                )
+                attr = result.scalar_one_or_none()
+                if not attr:
+                    return False
+                await session.delete(attr)
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error deleting category attribute: {e}")
+                return False
+
+    # ==================== CTC Methods ====================
+
+    async def get_all_classes(self, active_only: bool = True) -> List[CTCClass]:
+        async with get_async_session() as session:
+            query = select(CTCClass)
+            if active_only:
+                query = query.where(CTCClass.active == True, CTCClass.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_class_by_id(self, class_id: int) -> Optional[CTCClass]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCClass).where(CTCClass.id == class_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_class_by_uuid(self, class_uuid: str) -> Optional[CTCClass]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCClass).where(CTCClass.uuid == class_uuid)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_class_by_code(self, code: str) -> Optional[CTCClass]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCClass).where(CTCClass.code == code)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_class(self, data: dict) -> CTCClass:
+        async with get_async_session() as session:
+            try:
+                new_class = CTCClass(**data)
+                session.add(new_class)
+                await session.commit()
+                await session.refresh(new_class)
+                return new_class
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def update_class(self, class_id: int, data: dict) -> Optional[CTCClass]:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCClass).where(CTCClass.id == class_id)
+                )
+                class_obj = result.scalar_one_or_none()
+                if not class_obj:
+                    return None
+                
+                for key, value in data.items():
+                    setattr(class_obj, key, value)
+                
+                await session.commit()
+                await session.refresh(class_obj)
+                return class_obj
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def delete_class(self, class_id: int, soft_delete: bool = True) -> bool:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCClass).where(CTCClass.id == class_id)
+                )
+                class_obj = result.scalar_one_or_none()
+                if not class_obj:
+                    return False
+                
+                if soft_delete:
+                    class_obj.deleted = datetime.utcnow()
+                    class_obj.deleted_by = "system"
+                    class_obj.active = False
+                else:
+                    await session.delete(class_obj)
+                
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_types_by_class(self, class_id: int, active_only: bool = True) -> List[CTCType]:
+        async with get_async_session() as session:
+            query = select(CTCType).where(CTCType.class_id == class_id)
+            if active_only:
+                query = query.where(CTCType.active == True, CTCType.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_types_by_class_uuid(self, class_uuid: str, active_only: bool = True) -> List[CTCType]:
+        async with get_async_session() as session:
+            query = (
+                select(CTCType)
+                .join(CTCClass, CTCType.class_id == CTCClass.id)
+                .where(CTCClass.uuid == class_uuid)
+            )
+            if active_only:
+                query = query.where(CTCType.active == True, CTCType.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_type_by_id(self, type_id: int) -> Optional[CTCType]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCType).where(CTCType.id == type_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_type_by_uuid(self, type_uuid: str) -> Optional[CTCType]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCType).where(CTCType.uuid == type_uuid)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_type(self, data: dict) -> CTCType:
+        async with get_async_session() as session:
+            try:
+                new_type = CTCType(**data)
+                session.add(new_type)
+                await session.commit()
+                await session.refresh(new_type)
+                return new_type
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def update_type(self, type_id: int, data: dict) -> Optional[CTCType]:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCType).where(CTCType.id == type_id)
+                )
+                type_obj = result.scalar_one_or_none()
+                if not type_obj:
+                    return None
+                
+                for key, value in data.items():
+                    setattr(type_obj, key, value)
+                
+                await session.commit()
+                await session.refresh(type_obj)
+                return type_obj
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def delete_type(self, type_id: int, soft_delete: bool = True) -> bool:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCType).where(CTCType.id == type_id)
+                )
+                type_obj = result.scalar_one_or_none()
+                if not type_obj:
+                    return False
+                
+                if soft_delete:
+                    type_obj.deleted = datetime.utcnow()
+                    type_obj.deleted_by = "system"
+                    type_obj.active = False
+                else:
+                    await session.delete(type_obj)
+                
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_categories_by_type(self, type_id: int, active_only: bool = True) -> List[CTCCategory]:
+        async with get_async_session() as session:
+            query = select(CTCCategory).where(CTCCategory.type_id == type_id)
+            if active_only:
+                query = query.where(CTCCategory.active == True, CTCCategory.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_categories_by_type_uuid(self, type_uuid: str, active_only: bool = True) -> List[CTCCategory]:
+        async with get_async_session() as session:
+            query = (
+                select(CTCCategory)
+                .join(CTCType, CTCCategory.type_id == CTCType.id)
+                .where(CTCType.uuid == type_uuid)
+            )
+            if active_only:
+                query = query.where(CTCCategory.active == True, CTCCategory.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_category_by_id(self, category_id: int) -> Optional[CTCCategory]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCCategory).where(CTCCategory.id == category_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_category_by_uuid(self, category_uuid: str) -> Optional[CTCCategory]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCCategory).where(CTCCategory.uuid == category_uuid)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_category_by_code(self, code: str) -> Optional[CTCCategory]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCCategory).where(CTCCategory.code == code)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_category(self, data: dict) -> CTCCategory:
+        async with get_async_session() as session:
+            try:
+                new_category = CTCCategory(**data)
+                session.add(new_category)
+                await session.commit()
+                await session.refresh(new_category)
+                return new_category
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def update_category(self, category_id: int, data: dict) -> Optional[CTCCategory]:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCCategory).where(CTCCategory.id == category_id)
+                )
+                category = result.scalar_one_or_none()
+                if not category:
+                    return None
+                
+                for key, value in data.items():
+                    setattr(category, key, value)
+                
+                await session.commit()
+                await session.refresh(category)
+                return category
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def delete_category(self, category_id: int, soft_delete: bool = True) -> bool:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCCategory).where(CTCCategory.id == category_id)
+                )
+                category = result.scalar_one_or_none()
+                if not category:
+                    return False
+                
+                if soft_delete:
+                    category.deleted = datetime.utcnow()
+                    category.deleted_by = "system"
+                    category.active = False
+                else:
+                    await session.delete(category)
+                
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_attributes_by_category(self, category_id: int, active_only: bool = True) -> List[CTCAttribute]:
+        logger.info(f"🔍 Getting attributes for category_id={category_id}, active_only={active_only}")
+        
+        async with get_async_session() as session:
+            try:
+                # First, let's check if the category exists
+                category_query = select(CTCCategory).where(CTCCategory.id == category_id)
+                category_result = await session.execute(category_query)
+                category = category_result.scalar_one_or_none()
+                
+                if not category:
+                    logger.warning(f"❌ Category with id={category_id} not found in database")
+                    return []
+                
+                logger.info(f"✅ Found category: id={category.id}, name='{category.name}', code='{category.code}'")
+                
+                # Build the main query
+                query = select(CTCAttribute).where(CTCAttribute.category_id == category_id)
+                
+                if active_only:
+                    query = query.where(CTCAttribute.active == True, CTCAttribute.deleted == None)
+                    logger.info(f"🔍 Query includes active_only filter")
+                
+                # Log the SQL query for debugging
+                logger.info(f"🔍 Executing query: {query}")
+                
+                result = await session.execute(query)
+                attributes = result.scalars().all()
+                
+                logger.info(f"📊 Found {len(attributes)} attributes for category_id={category_id}")
+                
+                # Log details of each attribute found
+                for i, attr in enumerate(attributes):
+                    logger.info(f"  📋 Attribute {i+1}: id={attr.id}, name='{attr.name}', active={attr.active}, deleted={attr.deleted}")
+                
+                return attributes
+                
+            except Exception as e:
+                logger.error(f"❌ Error getting attributes for category_id={category_id}: {str(e)}")
+                logger.error(f"❌ Exception type: {type(e).__name__}")
+                import traceback
+                logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                raise e
+
+    async def get_attribute_by_id(self, attribute_id: int) -> Optional[CTCAttribute]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCAttribute).where(CTCAttribute.id == attribute_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_attribute_by_uuid(self, attribute_uuid: str) -> Optional[CTCAttribute]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCAttribute).where(CTCAttribute.uuid == attribute_uuid)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_attribute(self, data: dict) -> CTCAttribute:
+        async with get_async_session() as session:
+            try:
+                new_attribute = CTCAttribute(**data)
+                session.add(new_attribute)
+                await session.commit()
+                await session.refresh(new_attribute)
+                return new_attribute
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def update_attribute(self, attribute_id: int, data: dict) -> Optional[CTCAttribute]:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCAttribute).where(CTCAttribute.id == attribute_id)
+                )
+                attribute = result.scalar_one_or_none()
+                if not attribute:
+                    return None
+                
+                for key, value in data.items():
+                    setattr(attribute, key, value)
+                
+                await session.commit()
+                await session.refresh(attribute)
+                return attribute
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def delete_attribute(self, attribute_id: int, soft_delete: bool = True) -> bool:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCAttribute).where(CTCAttribute.id == attribute_id)
+                )
+                attribute = result.scalar_one_or_none()
+                if not attribute:
+                    return False
+                
+                if soft_delete:
+                    attribute.deleted = datetime.utcnow()
+                    attribute.deleted_by = "system"
+                    attribute.active = False
+                else:
+                    await session.delete(attribute)
+                
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_all_attribute_groups(self, active_only: bool = True) -> List[CTCAttributeGroup]:
+        async with get_async_session() as session:
+            query = select(CTCAttributeGroup)
+            if active_only:
+                query = query.where(CTCAttributeGroup.active == True, CTCAttributeGroup.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_attribute_group_by_id(self, group_id: int) -> Optional[CTCAttributeGroup]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCAttributeGroup).where(CTCAttributeGroup.id == group_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_attribute_group(self, data: dict) -> CTCAttributeGroup:
+        async with get_async_session() as session:
+            try:
+                new_group = CTCAttributeGroup(**data)
+                session.add(new_group)
+                await session.commit()
+                await session.refresh(new_group)
+                return new_group
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_all_data_types(self, active_only: bool = True) -> List[CTCDataType]:
+        async with get_async_session() as session:
+            query = select(CTCDataType)
+            if active_only:
+                query = query.where(CTCDataType.active == True, CTCDataType.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_data_type_by_id(self, data_type_id: int) -> Optional[CTCDataType]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCDataType).where(CTCDataType.id == data_type_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_data_type(self, data: dict) -> CTCDataType:
+        async with get_async_session() as session:
+            try:
+                new_data_type = CTCDataType(**data)
+                session.add(new_data_type)
+                await session.commit()
+                await session.refresh(new_data_type)
+                return new_data_type
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_all_units_of_measure(self, active_only: bool = True) -> List[CTCUnitOfMeasure]:
+        async with get_async_session() as session:
+            query = select(CTCUnitOfMeasure)
+            if active_only:
+                query = query.where(CTCUnitOfMeasure.active == True, CTCUnitOfMeasure.deleted == None)
+            result = await session.execute(query)
+            return result.scalars().all()
+
+    async def get_unit_of_measure_by_id(self, uom_id: int) -> Optional[CTCUnitOfMeasure]:
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(CTCUnitOfMeasure).where(CTCUnitOfMeasure.id == uom_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def create_unit_of_measure(self, data: dict) -> CTCUnitOfMeasure:
+        async with get_async_session() as session:
+            try:
+                new_uom = CTCUnitOfMeasure(**data)
+                session.add(new_uom)
+                await session.commit()
+                await session.refresh(new_uom)
+                return new_uom
+            except Exception as e:
+                await session.rollback()
+                raise e
+
+    async def get_full_hierarchy(self, class_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        async with get_async_session() as session:
+            try:
+                if class_id:
+                    # Get specific class hierarchy
+                    query = (
+                        select(CTCClass)
+                        .options(
+                            joinedload(CTCClass.types).joinedload(CTCType.categories)
+                        )
+                        .where(CTCClass.id == class_id)
+                    )
+                    result = await session.execute(query)
+                    class_obj = result.unique().scalar_one_or_none()
+                    
+                    if not class_obj:
+                        return []
+                    
+                    hierarchy = []
+                    for type_obj in class_obj.types:
+                        if type_obj.active and not type_obj.deleted:
+                            type_data = {
+                               "id": type_obj.id,
+                                "uuid": type_obj.uuid,
+                                "code": type_obj.code,
+                                "name": type_obj.name,
+                                "active": type_obj.active,
+                                "categories": []
+                            }
+                            for category in type_obj.categories:
+                                if category.active and not category.deleted:
+                                    category_data = {
+                                       "id": category.id,
+                                        "uuid": category.uuid,
+                                        "code": category.code,
+                                        "name": category.name,
+                                        "active": category.active,
+                                        "product_id": category.product_id
+                                    }
+                                    type_data["categories"].append(category_data)
+                            
+                            hierarchy.append(type_data)
+                    
+                    return hierarchy
+                else:
+                    # Get all classes with their types and categories
+                    query = (
+                        select(CTCClass)
+                        .options(
+                            joinedload(CTCClass.types).joinedload(CTCType.categories)
+                        )
+                        .where(CTCClass.active == True, CTCClass.deleted == None)
+                    )
+                    result = await session.execute(query)
+                    classes = result.unique().scalars().all()
+                    
+                    hierarchy = []
+                    for class_obj in classes:
+                        class_data = {
+                            "id": class_obj.id,
+                            "uuid": class_obj.uuid,
+                            "code": class_obj.code,
+                            "name": class_obj.name,
+                            "active": class_obj.active,
+                            "types": []
+                        }
+                        for type_obj in class_obj.types:
+                            if type_obj.active and not type_obj.deleted:
+                                type_data = {
+                                   "id": type_obj.id,
+                                    "uuid": type_obj.uuid,
+                                    "code": type_obj.code,
+                                    "name": type_obj.name,
+                                    "active": type_obj.active,
+                                    "categories": []
+                                }
+                                for category in type_obj.categories:
+                                    if category.active and not category.deleted:
+                                        category_data = {
+                                           "id": category.id,
+                                            "uuid": category.uuid,
+                                            "code": category.code,
+                                            "name": category.name,
+                                            "active": category.active,
+                                            "product_id": category.product_id
+                                        }
+                                        type_data["categories"].append(category_data)
+                                class_data["types"].append(type_data)
+                        hierarchy.append(class_data)
+                    
+                    return hierarchy
+            except Exception as e:
+                logger.error(f"Error retrieving hierarchy: {e}")
+                raise e
+
+    async def search_ctc(self, search_term: str, level: Optional[int] = None) -> List[Dict[str, Any]]:
+        async with get_async_session() as session:
+            try:
+                results = []
+                
+                if level is None or level == 1:
+                    # Search classes
+                    query = (
+                        select(CTCClass)
+                        .where(
+                            and_(
+                                CTCClass.active == True,
+                                CTCClass.deleted == None,
+                                or_(
+                                    CTCClass.name.ilike(f"%{search_term}%"),
+                                    CTCClass.code.ilike(f"%{search_term}%")
+                                )
+                            )
+                        )
+                    )
+                    result = await session.execute(query)
+                    classes = result.unique().scalars().all()
+                    
+                    for cls in classes:
+                        results.append({
+                      "level": "class",
+                            "id": cls.id,
+                            "uuid": cls.uuid,
+                            "code": cls.code,
+                            "name": cls.name,
+                            "active": cls.active
+                        })
+                
+                if level is None or level == 2:
+                    # Search types
+                    query = (
+                        select(CTCType)
+                        .where(
+                            and_(
+                                CTCType.active == True,
+                                CTCType.deleted == None,
+                                or_(
+                                    CTCType.name.ilike(f"%{search_term}%"),
+                                    CTCType.code.ilike(f"%{search_term}%")
+                                )
+                            )
+                        )
+                    )
+                    result = await session.execute(query)
+                    types = result.unique().scalars().all()
+                    
+                    for type_obj in types:
+                        results.append({
+                      "level": "type",
+                            "id": type_obj.id,
+                            "uuid": type_obj.uuid,
+                            "code": type_obj.code,
+                            "name": type_obj.name,
+                            "active": type_obj.active,
+                          "class_id": type_obj.class_id
+                        })
+                
+                if level is None or level == 3:
+                    # Search categories
+                    query = (
+                        select(CTCCategory)
+                        .where(
+                            and_(
+                                CTCCategory.active == True,
+                                CTCCategory.deleted == None,
+                                or_(
+                                    CTCCategory.name.ilike(f"%{search_term}%"),
+                                    CTCCategory.code.ilike(f"%{search_term}%")
+                                )
+                            )
+                        )
+                    )
+                    result = await session.execute(query)
+                    categories = result.unique().scalars().all()
+                    
+                    for category in categories:
+                        results.append({
+                      "level": "category",
+                            "id": category.id,
+                            "uuid": category.uuid,
+                            "code": category.code,
+                            "name": category.name,
+                            "active": category.active,
+                    "type_id": category.type_id,
+                       "product_id": category.product_id
+                        })
+                
+                return results
+            except Exception as e:
+                logger.error(f"Error searching CTC data: {e}")
+                raise e
+
+    async def get_category_with_attributes(self, category_id: int) -> Optional[Dict[str, Any]]:
+        async with get_async_session() as session:
+            try:
+                query = (
+                    select(CTCCategory)
+                    .options(
+                        joinedload(CTCCategory.ctc_attributes).joinedload(CTCAttribute.attribute_group),
+                        joinedload(CTCCategory.ctc_attributes).joinedload(CTCAttribute.data_type),
+                        joinedload(CTCCategory.ctc_attributes).joinedload(CTCAttribute.uom),
+                        joinedload(CTCCategory.attributes)
+                    )
+                    .where(CTCCategory.id == category_id)
+                )
+                result = await session.execute(query)
+                category = result.scalar_one_or_none()
+                
+                if not category:
+                    return None
+                
+                # Build response
+                category_data = {
+                   "id": category.id,
+                    "uuid": category.uuid,
+                    "code": category.code,
+                    "name": category.name,
+                    "active": category.active,
+                    "type_id": category.type_id,
+                    "product_id": category.product_id,
+                    "ctc_attributes": [],
+                    "simple_attributes": []
+                }
+                
+                # Add CTC attributes
+                for attr in category.ctc_attributes:
+                    if attr.active and not attr.deleted:
+                        attr_data = {
+                         "id": attr.id,
+                           "uuid": attr.uuid,
+                           "name": attr.name,
+                           "rank": attr.rank,
+                           "as_filter": attr.as_filter,
+                        "active": attr.active,
+                            "attribute_group": {
+                         "id": attr.attribute_group.id,
+                           "name": attr.attribute_group.name,
+                           "code": attr.attribute_group.code
+                            },
+                         "data_type": {
+                               "id": attr.data_type.id,
+                               "name": attr.data_type.name,
+                               "code": attr.data_type.code
+                            }
+                        }
+                        
+                        if attr.uom:
+                            attr_data["unit_of_measure"] = {
+                               "id": attr.uom.id,
+                              "name": attr.uom.name,
+                              "code": attr.uom.code
+                            }
+                        
+                        category_data["ctc_attributes"].append(attr_data)
+                
+                # Add simple attributes
+                for attr in category.attributes:
+                    attr_data = {
+                     "id": attr.id,
+                   "name": attr.name,
+                   "value": attr.value
+                    }
+                    category_data["simple_attributes"].append(attr_data)
+                
+                return category_data
+            except Exception as e:
+                logger.error(f"Error retrieving category with attributes: {e}")
+                raise e
+
+    async def get_statistics(self) -> Dict[str, Dict[str, int]]:
+        async with get_async_session() as session:
+            try:
+                # Count classes
+                class_result = await session.execute(
+                    select(func.count(CTCClass.id)).where(CTCClass.active == True, CTCClass.deleted == None)
+                )
+                total_classes = class_result.scalar()
+                
+                class_result_inactive = await session.execute(
+                    select(func.count(CTCClass.id)).where(CTCClass.active == False)
+                )
+                inactive_classes = class_result_inactive.scalar()
+                
+                # Count types
+                type_result = await session.execute(
+                    select(func.count(CTCType.id)).where(CTCType.active == True, CTCType.deleted == None)
+                )
+                total_types = type_result.scalar()
+                
+                type_result_inactive = await session.execute(
+                    select(func.count(CTCType.id)).where(CTCType.active == False)
+                )
+                inactive_types = type_result_inactive.scalar()
+                
+                # Count categories
+                category_result = await session.execute(
+                    select(func.count(CTCCategory.id)).where(CTCCategory.active == True, CTCCategory.deleted == None)
+                )
+                total_categories = category_result.scalar()
+                
+                category_result_inactive = await session.execute(
+                    select(func.count(CTCCategory.id)).where(CTCCategory.active == False)
+                )
+                inactive_categories = category_result_inactive.scalar()
+                
+                # Count attributes
+                attr_result = await session.execute(
+                    select(func.count(CTCAttribute.id)).where(CTCAttribute.active == True, CTCAttribute.deleted == None)
+                )
+                total_attributes = attr_result.scalar()
+                
+                attr_result_inactive = await session.execute(
+                    select(func.count(CTCAttribute.id)).where(CTCAttribute.active == False)
+                )
+                inactive_attributes = attr_result_inactive.scalar()
+                
+                return {
+               "classes": {
+                    "total": total_classes,
+                    "active": total_classes,
+                    "inactive": inactive_classes
+                },
+             "types": {
+                    "total": total_types,
+                    "active": total_types,
+                    "inactive": inactive_types
+                },
+                  "categories": {
+                    "total": total_categories,
+                    "active": total_categories,
+                    "inactive": inactive_categories
+                },
+                  "attributes": {
+                    "total": total_attributes,
+                    "active": total_attributes,
+                    "inactive": inactive_attributes
+                }
+            }
+            except Exception as e:
+                logger.error(f"Error retrieving statistics: {e}")
+                raise e
+
+    async def assign_product_to_category(self, category_id: int, product_id: int) -> bool:
+        async with get_async_session() as session:
+            try:
+                # Check if category exists
+                category_result = await session.execute(
+                    select(CTCCategory).where(CTCCategory.id == category_id)
+                )
+                category = category_result.scalar_one_or_none()
+                if not category:
+                    return False
+                
+                # Check if product exists
+                product_result = await session.execute(
+                    select(ProductModel).where(ProductModel.id == product_id)
+                )
+                product = product_result.scalar_one_or_none()
+                if not product:
+                    return False
+                
+                # Assign product to category
+                category.product_id = product_id
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error assigning product to category: {e}")
+                return False
+
+    async def remove_product_from_category(self, category_id: int) -> bool:
+        async with get_async_session() as session:
+            try:
+                result = await session.execute(
+                    select(CTCCategory).where(CTCCategory.id == category_id)
+                )
+                category = result.scalar_one_or_none()
+                if not category:
+                    return False
+                
+                category.product_id = None
+                await session.commit()
+                return True
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error removing product from category: {e}")
+                return False
+
+    async def get_products_by_category(self, category_id: int) -> List[Dict[str, Any]]:
+        async with get_async_session() as session:
+            try:
+                query = (
+                    select(ProductModel)
+                    .join(CTCCategory, ProductModel.id == CTCCategory.product_id)
+                    .where(CTCCategory.id == category_id)
+                )
+                result = await session.execute(query)
+                products = result.scalars().all()
+                
+                return [
+    {
+                     "id": product.id,
+                     "uuid": product.uuid,
+                     "product_code": product.product_code,
+                     "product_name": product.product_name,
+                   "brand_name": product.brand_name,
+                       "distributor_name": product.distributor_name
+                    }
+                    for product in products
+                ]
+            except Exception as e:
+                logger.error(f"Error retrieving products for category: {e}")
+                raise e
+
+    async def get_categories_by_product(self, product_id: int) -> List[CTCCategory]:
+        async with get_async_session() as session:
+            stmt = (
+                select(CTCCategory)
+                .where(CTCCategory.product_id == product_id)
+                .where(CTCCategory.active == True)
+            )
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    ### PRICE LEVEL TYPE OPERATIONS ###
+
+    async def get_price_level_types(self, active_only: bool = True) -> List[PriceLevelTypeRead]:
+        """Get all price level types"""
+        async with get_async_session() as session:
+            stmt = select(PriceLevelType)
+            if active_only:
+                stmt = stmt.where(PriceLevelType.active == True)
+            stmt = stmt.order_by(PriceLevelType.code)
+            result = await session.execute(stmt)
+            return [to_schema(row, PriceLevelTypeRead) for row in result.scalars().all()]
+
+    async def get_price_level_type(self, type_id: int) -> Optional[PriceLevelTypeRead]:
+        """Get a specific price level type by ID"""
+        async with get_async_session() as session:
+            result = await session.get(PriceLevelType, type_id)
+            return to_schema(result, PriceLevelTypeRead) if result else None
+
+    async def get_price_level_type_by_code(self, code: str) -> Optional[PriceLevelTypeRead]:
+        """Get a price level type by code"""
+        async with get_async_session() as session:
+            stmt = select(PriceLevelType).where(PriceLevelType.code == code)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, PriceLevelTypeRead) if row else None
+
+    async def create_price_level_type(self, data: PriceLevelTypeCreate) -> PriceLevelTypeRead:
+        """Create a new price level type"""
+        async with get_async_session() as session:
+            # Check if code already exists
+            existing = await session.execute(
+                select(PriceLevelType).where(PriceLevelType.code == data.code)
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f"Price level type with code '{data.code}' already exists")
+
+            price_level_type = PriceLevelType(
+                code=data.code,
+                name=data.name,
+                store=data.store,
+                is_incl=data.is_incl,
+                apply_to_db=data.apply_to_db,
+                price_type_code=data.price_type_code,
+                price_type_name=data.price_type_name,
+                parent_code=data.parent_code,
+                active=data.active,
+                modified_by=data.modified_by,
+                created_by=data.created_by,
+                modified=datetime.utcnow(),
+                created=datetime.utcnow()
+            )
+            session.add(price_level_type)
+            await session.commit()
+            await session.refresh(price_level_type)
+            return to_schema(price_level_type, PriceLevelTypeRead)
+
+    async def update_price_level_type(self, type_id: int, data: PriceLevelTypeUpdate) -> Optional[PriceLevelTypeRead]:
+        """Update a price level type"""
+        async with get_async_session() as session:
+            price_level_type = await session.get(PriceLevelType, type_id)
+            if not price_level_type:
+                return None
+
+            # Check if code is being changed and if it already exists
+            if data.code and data.code != price_level_type.code:
+                existing = await session.execute(
+                    select(PriceLevelType).where(PriceLevelType.code == data.code)
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f"Price level type with code '{data.code}' already exists")
+
+            # Update fields
+            update_data = data.model_dump(exclude_unset=True)
+            if update_data:
+                update_data['modified'] = datetime.utcnow()
+                for key, value in update_data.items():
+                    setattr(price_level_type, key, value)
+                await session.commit()
+                await session.refresh(price_level_type)
+
+            return to_schema(price_level_type, PriceLevelTypeRead)
+
+    async def delete_price_level_type(self, type_id: int, soft_delete: bool = True) -> bool:
+        """Delete a price level type"""
+        async with get_async_session() as session:
+            price_level_type = await session.get(PriceLevelType, type_id)
+            if not price_level_type:
+                return False
+
+            if soft_delete:
+                price_level_type.active = False
+                price_level_type.deleted = datetime.utcnow()
+                price_level_type.deleted_by = "system"
+            else:
+                await session.delete(price_level_type)
+
+            await session.commit()
+            return True
+
+
+    ### DEAL SOURCE OPERATIONS ###
+
+    async def get_deal_sources(self, active_only: bool = True) -> List[DealSourceRead]:
+        """Get all deal sources"""
+        async with get_async_session() as session:
+            stmt = select(DealSource)
+            if active_only:
+                stmt = stmt.where(DealSource.active == True)
+            stmt = stmt.order_by(DealSource.code)
+            result = await session.execute(stmt)
+            return [to_schema(row, DealSourceRead) for row in result.scalars().all()]
+
+    async def get_deal_source(self, source_id: int) -> Optional[DealSourceRead]:
+        """Get a specific deal source by ID"""
+        async with get_async_session() as session:
+            result = await session.get(DealSource, source_id)
+            return to_schema(result, DealSourceRead) if result else None
+
+    async def get_deal_source_by_code(self, code: str) -> Optional[DealSourceRead]:
+        """Get a deal source by code"""
+        async with get_async_session() as session:
+            stmt = select(DealSource).where(DealSource.code == code)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, DealSourceRead) if row else None
+
+    async def create_deal_source(self, data: DealSourceCreate) -> DealSourceRead:
+        """Create a new deal source"""
+        async with get_async_session() as session:
+            # Check if code already exists
+            existing = await session.execute(
+                select(DealSource).where(DealSource.code == data.code)
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f"Deal source with code '{data.code}' already exists")
+
+            deal_source = DealSource(
+                code=data.code,
+                name=data.name,
+                store=data.store,
+                for_hoff_only=data.for_hoff_only,
+                active=data.active,
+                modified_by=data.modified_by,
+                created_by=data.created_by,
+                modified=datetime.utcnow(),
+                created=datetime.utcnow()
+            )
+            session.add(deal_source)
+            await session.commit()
+            await session.refresh(deal_source)
+            return to_schema(deal_source, DealSourceRead)
+
+    async def update_deal_source(self, source_id: int, data: DealSourceUpdate) -> Optional[DealSourceRead]:
+        """Update a deal source"""
+        async with get_async_session() as session:
+            deal_source = await session.get(DealSource, source_id)
+            if not deal_source:
+                return None
+
+            # Check if code is being changed and if it already exists
+            if data.code and data.code != deal_source.code:
+                existing = await session.execute(
+                    select(DealSource).where(DealSource.code == data.code)
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f"Deal source with code '{data.code}' already exists")
+
+            # Update fields
+            update_data = data.model_dump(exclude_unset=True)
+            if update_data:
+                update_data['modified'] = datetime.utcnow()
+                for key, value in update_data.items():
+                    setattr(deal_source, key, value)
+                await session.commit()
+                await session.refresh(deal_source)
+
+            return to_schema(deal_source, DealSourceRead)
+
+    async def delete_deal_source(self, source_id: int, soft_delete: bool = True) -> bool:
+        """Delete a deal source"""
+        async with get_async_session() as session:
+            deal_source = await session.get(DealSource, source_id)
+            if not deal_source:
+                return False
+
+            if soft_delete:
+                deal_source.active = False
+                deal_source.deleted = datetime.utcnow()
+                deal_source.deleted_by = "system"
+            else:
+                await session.delete(deal_source)
+
+            await session.commit()
+            return True
+
+
+    ### DEAL TYPE OPERATIONS ###
+
+    async def get_deal_types(self, active_only: bool = True) -> List[DealTypeRead]:
+        """Get all deal types"""
+        async with get_async_session() as session:
+            stmt = (
+                select(DealType)
+                .options(selectinload(DealType.default_provider))
+            )
+            if active_only:
+                stmt = stmt.where(DealType.active == True)
+            stmt = stmt.order_by(DealType.rank, DealType.code)
+            result = await session.execute(stmt)
+            return [to_schema(row, DealTypeRead) for row in result.scalars().all()]
+
+    async def get_deal_type(self, type_id: int) -> Optional[DealTypeRead]:
+        """Get a specific deal type by ID"""
+        async with get_async_session() as session:
+            stmt = (
+                select(DealType)
+                .options(selectinload(DealType.default_provider))
+                .where(DealType.id == type_id)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, DealTypeRead) if row else None
+
+    async def get_deal_type_by_code(self, code: str) -> Optional[DealTypeRead]:
+        """Get a deal type by code"""
+        async with get_async_session() as session:
+            stmt = (
+                select(DealType)
+                .options(selectinload(DealType.default_provider))
+                .where(DealType.code == code)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            return to_schema(row, DealTypeRead) if row else None
+
+    async def create_deal_type(self, data: DealTypeCreate) -> DealTypeRead:
+        """Create a new deal type"""
+        async with get_async_session() as session:
+            # Check if code already exists
+            existing = await session.execute(
+                select(DealType).where(DealType.code == data.code)
+            )
+            if existing.scalar_one_or_none():
+                raise ValueError(f"Deal type with code '{data.code}' already exists")
+
+            # Validate default provider if provided
+            if data.default_provider_id:
+                provider = await session.get(DealSource, data.default_provider_id)
+                if not provider:
+                    raise ValueError(f"Deal source with ID {data.default_provider_id} not found")
+
+            deal_type = DealType(
+                code=data.code,
+                name=data.name,
+                store=data.store,
+                rank=data.rank,
+                bonus_class=data.bonus_class,
+                claimable=data.claimable,
+                deductable=data.deductable,
+                default_provider_id=data.default_provider_id,
+                active=data.active,
+                modified_by=data.modified_by,
+                created_by=data.created_by,
+                modified=datetime.utcnow(),
+                created=datetime.utcnow()
+            )
+            session.add(deal_type)
+            await session.commit()
+            await session.refresh(deal_type)
+            
+            # Load the relationship for the response
+            return to_schema(deal_type, DealTypeRead)
+
+    async def update_deal_type(self, type_id: int, data: DealTypeUpdate) -> Optional[DealTypeRead]:
+        """Update a deal type"""
+        async with get_async_session() as session:
+            deal_type = await session.get(DealType, type_id)
+            if not deal_type:
+                return None
+
+            # Check if code is being changed and if it already exists
+            if data.code and data.code != deal_type.code:
+                existing = await session.execute(
+                    select(DealType).where(DealType.code == data.code)
+                )
+                if existing.scalar_one_or_none():
+                    raise ValueError(f"Deal type with code '{data.code}' already exists")
+
+            # Validate default provider if being changed
+            if data.default_provider_id and data.default_provider_id != deal_type.default_provider_id:
+                provider = await session.get(DealSource, data.default_provider_id)
+                if not provider:
+                    raise ValueError(f"Deal source with ID {data.default_provider_id} not found")
+
+            # Update fields
+            update_data = data.model_dump(exclude_unset=True)
+            if update_data:
+                update_data['modified'] = datetime.utcnow()
+                for key, value in update_data.items():
+                    setattr(deal_type, key, value)
+                await session.commit()
+                await session.refresh(deal_type)
+
+            return to_schema(deal_type, DealTypeRead)
+
+    async def delete_deal_type(self, type_id: int, soft_delete: bool = True) -> bool:
+        """Delete a deal type"""
+        async with get_async_session() as session:
+            deal_type = await session.get(DealType, type_id)
+            if not deal_type:
+                return False
+
+            if soft_delete:
+                deal_type.active = False
+                deal_type.deleted = datetime.utcnow()
+                deal_type.deleted_by = "system"
+            else:
+                await session.delete(deal_type)
+
+            await session.commit()
+            return True
+
+    # ==================== CTC Link-Types Methods ====================
+
+    async def get_type_links(self, source_type_id: Optional[int] = None, target_type_id: Optional[int] = None, active_only: bool = True) -> List[CTCTypeLink]:
+        """Get CTC type links with optional filtering"""
+        try:
+            async with get_async_session() as session:
+                query = select(CTCTypeLink)
+                
+                if active_only:
+                    query = query.where(CTCTypeLink.active == True)
+                
+                if source_type_id:
+                    query = query.where(CTCTypeLink.source_type_id == source_type_id)
+                
+                if target_type_id:
+                    query = query.where(CTCTypeLink.target_type_id == target_type_id)
+                
+                result = await session.execute(query)
+                return result.scalars().all()
+        except Exception as e:
+            logger.error(f"Error getting type links: {str(e)}")
+            return []
+
+    async def get_type_link_by_id(self, link_id: int) -> Optional[CTCTypeLink]:
+        """Get a specific CTC type link by ID"""
+        try:
+            async with get_async_session() as session:
+                return await session.get(CTCTypeLink, link_id)
+        except Exception as e:
+            logger.error(f"Error getting type link: {str(e)}")
+            return None
+
+    async def get_type_link_by_uuid(self, link_uuid: str) -> Optional[CTCTypeLink]:
+        """Get a specific CTC type link by UUID"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(CTCTypeLink).where(CTCTypeLink.uuid == link_uuid)
+                )
+                return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting type link by UUID: {str(e)}")
+            return None
+
+    async def create_type_link(self, data: dict) -> CTCTypeLink:
+        """Create a new CTC type link"""
+        try:
+            async with get_async_session() as session:
+                type_link = CTCTypeLink(**data)
+                session.add(type_link)
+                await session.commit()
+                await session.refresh(type_link)
+                return type_link
+        except Exception as e:
+            logger.error(f"Error creating type link: {str(e)}")
+            raise
+
+    async def update_type_link(self, link_id: int, data: dict) -> Optional[CTCTypeLink]:
+        """Update an existing CTC type link"""
+        try:
+            async with get_async_session() as session:
+                type_link = await session.get(CTCTypeLink, link_id)
+                if not type_link:
+                    return None
+                
+                for key, value in data.items():
+                    if hasattr(type_link, key):
+                        setattr(type_link, key, value)
+                
+                type_link.modified = datetime.utcnow()
+                await session.commit()
+                await session.refresh(type_link)
+                return type_link
+        except Exception as e:
+            logger.error(f"Error updating type link: {str(e)}")
+            return None
+
+    async def delete_type_link(self, link_id: int, soft_delete: bool = True) -> bool:
+        """Delete a CTC type link (soft delete by default)"""
+        try:
+            async with get_async_session() as session:
+                type_link = await session.get(CTCTypeLink, link_id)
+                if not type_link:
+                    return False
+                
+                if soft_delete:
+                    type_link.active = False
+                    type_link.deleted_by = "system"
+                    type_link.deleted = datetime.utcnow()
+                else:
+                    await session.delete(type_link)
+                
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting type link: {str(e)}")
+            return False
+
+    async def get_type_options(self, source_type_id: Optional[int] = None, option_type_id: Optional[int] = None, active_only: bool = True) -> List[CTCTypeOption]:
+        """Get CTC type options with optional filtering"""
+        try:
+            async with get_async_session() as session:
+                query = select(CTCTypeOption)
+                
+                if active_only:
+                    query = query.where(CTCTypeOption.active == True)
+                
+                if source_type_id:
+                    query = query.where(CTCTypeOption.source_type_id == source_type_id)
+                
+                if option_type_id:
+                    query = query.where(CTCTypeOption.option_type_id == option_type_id)
+                
+                result = await session.execute(query)
+                return result.scalars().all()
+        except Exception as e:
+            logger.error(f"Error getting type options: {str(e)}")
+            return []
+
+    async def get_type_option_by_id(self, option_id: int) -> Optional[CTCTypeOption]:
+        """Get a specific CTC type option by ID"""
+        try:
+            async with get_async_session() as session:
+                return await session.get(CTCTypeOption, option_id)
+        except Exception as e:
+            logger.error(f"Error getting type option: {str(e)}")
+            return None
+
+    async def get_type_option_by_uuid(self, option_uuid: str) -> Optional[CTCTypeOption]:
+        """Get a specific CTC type option by UUID"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(CTCTypeOption).where(CTCTypeOption.uuid == option_uuid)
+                )
+                return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting type option by UUID: {str(e)}")
+            return None
+
+    async def create_type_option(self, data: dict) -> CTCTypeOption:
+        """Create a new CTC type option"""
+        try:
+            async with get_async_session() as session:
+                type_option = CTCTypeOption(**data)
+                session.add(type_option)
+                await session.commit()
+                await session.refresh(type_option)
+                return type_option
+        except Exception as e:
+            logger.error(f"Error creating type option: {str(e)}")
+            raise
+
+    async def update_type_option(self, option_id: int, data: dict) -> Optional[CTCTypeOption]:
+        """Update an existing CTC type option"""
+        try:
+            async with get_async_session() as session:
+                type_option = await session.get(CTCTypeOption, option_id)
+                if not type_option:
+                    return None
+                
+                for key, value in data.items():
+                    if hasattr(type_option, key):
+                        setattr(type_option, key, value)
+                
+                type_option.modified = datetime.utcnow()
+                await session.commit()
+                await session.refresh(type_option)
+                return type_option
+        except Exception as e:
+            logger.error(f"Error updating type option: {str(e)}")
+            return None
+
+    async def delete_type_option(self, option_id: int, soft_delete: bool = True) -> bool:
+        """Delete a CTC type option (soft delete by default)"""
+        try:
+            async with get_async_session() as session:
+                type_option = await session.get(CTCTypeOption, option_id)
+                if not type_option:
+                    return False
+                
+                if soft_delete:
+                    type_option.active = False
+                    type_option.deleted_by = "system"
+                    type_option.deleted = datetime.utcnow()
+                else:
+                    await session.delete(type_option)
+                
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting type option: {str(e)}")
+            return False
+
+    async def get_type_link_statistics(self) -> Dict[str, Any]:
+        """Get statistics for CTC type links"""
+        try:
+            async with get_async_session() as session:
+                # Total links
+                total_links = await session.scalar(select(func.count(CTCTypeLink.id)))
+                
+                # Unique source types
+                unique_sources = await session.scalar(
+                    select(func.count(func.distinct(CTCTypeLink.source_type_id)))
+                )
+                
+                # Unique target types
+                unique_targets = await session.scalar(
+                    select(func.count(func.distinct(CTCTypeLink.target_type_id)))
+                )
+                
+                # Average links per source
+                avg_links = await session.scalar(
+                    select(func.avg(func.count(CTCTypeLink.id)))
+                    .group_by(CTCTypeLink.source_type_id)
+                ) or 0.0
+                
+                # Most linked source type
+                most_linked_source = await session.execute(
+                    select(CTCTypeLink.source_type_id, func.count(CTCTypeLink.id).label('count'))
+                    .group_by(CTCTypeLink.source_type_id)
+                    .order_by(desc('count'))
+                    .limit(1)
+                )
+                most_linked_source_result = most_linked_source.first()
+                
+                # Most linked target type
+                most_linked_target = await session.execute(
+                    select(CTCTypeLink.target_type_id, func.count(CTCTypeLink.id).label('count'))
+                    .group_by(CTCTypeLink.target_type_id)
+                    .order_by(desc('count'))
+                    .limit(1)
+                )
+                most_linked_target_result = most_linked_target.first()
+                
+                # Scraped at range
+                scraped_range = await session.execute(
+                    select(
+                        func.min(CTCTypeLink.scraped_at).label('min_date'),
+                        func.max(CTCTypeLink.scraped_at).label('max_date')
+                    )
+                )
+                scraped_range_result = scraped_range.first()
+                
+                return {
+                    "total_links": total_links or 0,
+                    "unique_source_types": unique_sources or 0,
+                    "unique_target_types": unique_targets or 0,
+                    "average_links_per_source": float(avg_links),
+                    "most_linked_source_type": {
+                        "type_id": most_linked_source_result[0],
+                        "count": most_linked_source_result[1]
+                    } if most_linked_source_result else None,
+                    "most_linked_target_type": {
+                        "type_id": most_linked_target_result[0],
+                        "count": most_linked_target_result[1]
+                    } if most_linked_target_result else None,
+                    "scraped_at_range": {
+                        "min_date": scraped_range_result[0],
+                        "max_date": scraped_range_result[1]
+                    } if scraped_range_result else None
+                }
+        except Exception as e:
+            logger.error(f"Error getting type link statistics: {str(e)}")
+            return {}
+
+    async def get_type_option_statistics(self) -> Dict[str, Any]:
+        """Get statistics for CTC type options"""
+        try:
+            async with get_async_session() as session:
+                # Total options
+                total_options = await session.scalar(select(func.count(CTCTypeOption.id)))
+                
+                # Unique source types
+                unique_sources = await session.scalar(
+                    select(func.count(func.distinct(CTCTypeOption.source_type_id)))
+                )
+                
+                # Unique option types
+                unique_options = await session.scalar(
+                    select(func.count(func.distinct(CTCTypeOption.option_type_id)))
+                )
+                
+                # Average options per source
+                avg_options = await session.scalar(
+                    select(func.avg(func.count(CTCTypeOption.id)))
+                    .group_by(CTCTypeOption.source_type_id)
+                ) or 0.0
+                
+                # Most common source type
+                most_common_source = await session.execute(
+                    select(CTCTypeOption.source_type_id, func.count(CTCTypeOption.id).label('count'))
+                    .group_by(CTCTypeOption.source_type_id)
+                    .order_by(desc('count'))
+                    .limit(1)
+                )
+                most_common_source_result = most_common_source.first()
+                
+                # Most common option type
+                most_common_option = await session.execute(
+                    select(CTCTypeOption.option_type_id, func.count(CTCTypeOption.id).label('count'))
+                    .group_by(CTCTypeOption.option_type_id)
+                    .order_by(desc('count'))
+                    .limit(1)
+                )
+                most_common_option_result = most_common_option.first()
+                
+                # Scraped at range
+                scraped_range = await session.execute(
+                    select(
+                        func.min(CTCTypeOption.scraped_at).label('min_date'),
+                        func.max(CTCTypeOption.scraped_at).label('max_date')
+                    )
+                )
+                scraped_range_result = scraped_range.first()
+                
+                return {
+                    "total_options": total_options or 0,
+                    "unique_source_types": unique_sources or 0,
+                    "unique_option_types": unique_options or 0,
+                    "average_options_per_source": float(avg_options),
+                    "most_common_source_type": {
+                        "type_id": most_common_source_result[0],
+                        "count": most_common_source_result[1]
+                    } if most_common_source_result else None,
+                    "most_common_option_type": {
+                        "type_id": most_common_option_result[0],
+                        "count": most_common_option_result[1]
+                    } if most_common_option_result else None,
+                    "scraped_at_range": {
+                        "min_date": scraped_range_result[0],
+                        "max_date": scraped_range_result[1]
+                    } if scraped_range_result else None
+                }
+        except Exception as e:
+            logger.error(f"Error getting type option statistics: {str(e)}")
+            return {}
+
+    # NEW DEAL VALUE TYPE METHODS
+    async def get_deal_value_types(self, active_only: bool = True) -> List[DealValueTypeRead]:
+        """Get all deal value types"""
+        try:
+            async with get_async_session() as session:
+                query = select(DealValueType)
+                if active_only:
+                    query = query.where(DealValueType.active == True)
+                query = query.order_by(DealValueType.code)
+                
+                result = await session.execute(query)
+                value_types = result.scalars().all()
+                
+                return [to_schema(value_type, DealValueTypeRead) for value_type in value_types]
+        except Exception as e:
+            logger.error(f"Error getting deal value types: {str(e)}")
+            return []
+
+    async def get_deal_value_type(self, value_type_id: int) -> Optional[DealValueTypeRead]:
+        """Get a specific deal value type by ID"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealValueType).where(DealValueType.id == value_type_id)
+                )
+                value_type = result.scalar_one_or_none()
+                
+                if value_type:
+                    return DealValueTypeRead.model_validate(value_type)
+                return None
+        except Exception as e:
+            logger.error(f"Error getting deal value type {value_type_id}: {str(e)}")
+            return None
+
+    async def get_deal_value_type_by_code(self, code: str) -> Optional[DealValueTypeRead]:
+        """Get a deal value type by code"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealValueType).where(DealValueType.code == code)
+                )
+                value_type = result.scalar_one_or_none()
+                
+                if value_type:
+                    return to_schema(value_type, DealValueTypeRead)
+                return None
+        except Exception as e:
+            logger.error(f"Error getting deal value type by code {code}: {str(e)}")
+            return None
+
+    async def create_deal_value_type(self, data: DealValueTypeCreate) -> DealValueTypeRead:
+        """Create a new deal value type"""
+        try:
+            async with get_async_session() as session:
+                value_type = DealValueType(
+                    code=data.code,
+                    name=data.name,
+                    store=data.store,
+                    symbol=data.symbol,
+                    active=data.active,
+                    modified_by=data.modified_by,
+                    created_by=data.created_by
+                )
+                
+                session.add(value_type)
+                await session.commit()
+                await session.refresh(value_type)
+                
+                return to_schema(value_type, DealValueTypeRead)
+        except Exception as e:
+            logger.error(f"Error creating deal value type: {str(e)}")
+            raise
+
+    async def update_deal_value_type(self, value_type_id: int, data: DealValueTypeUpdate) -> Optional[DealValueTypeRead]:
+        """Update a deal value type"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealValueType).where(DealValueType.id == value_type_id)
+                )
+                value_type = result.scalar_one_or_none()
+                
+                if not value_type:
+                    return None
+                
+                # Update fields
+                update_data = data.model_dump(exclude_unset=True)
+                for field, value in update_data.items():
+                    if hasattr(value_type, field):
+                        setattr(value_type, field, value)
+                
+                value_type.modified_by = data.modified_by
+                value_type.modified = datetime.utcnow()
+                
+                await session.commit()
+                await session.refresh(value_type)
+                
+                return to_schema(value_type, DealValueTypeRead)
+        except Exception as e:
+            logger.error(f"Error updating deal value type {value_type_id}: {str(e)}")
+            return None
+
+    async def delete_deal_value_type(self, value_type_id: int, soft_delete: bool = True) -> bool:
+        """Delete a deal value type"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealValueType).where(DealValueType.id == value_type_id)
+                )
+                value_type = result.scalar_one_or_none()
+                
+                if not value_type:
+                    return False
+                
+                if soft_delete:
+                    value_type.active = False
+                    value_type.deleted_by = "system"
+                    value_type.deleted = datetime.utcnow()
+                else:
+                    await session.delete(value_type)
+                
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting deal value type {value_type_id}: {str(e)}")
+            return False
+
+    # NEW DEAL CALCULATION METHODS
+    async def get_deal_calculations(
+        self, 
+        rebate_agreement_id: Optional[int] = None,
+        product_id: Optional[int] = None,
+        status: Optional[str] = None,
+        active_only: bool = True
+    ) -> List[DealCalculationRead]:
+        """Get deal calculations with optional filtering"""
+        try:
+            async with get_async_session() as session:
+                query = select(DealCalculation).options(
+                    joinedload(DealCalculation.deal_value_type)
+                )
+                
+                if active_only:
+                    query = query.where(DealCalculation.active == True)
+                if rebate_agreement_id:
+                    query = query.where(DealCalculation.rebate_agreement_id == rebate_agreement_id)
+                if product_id:
+                    query = query.where(DealCalculation.product_id == product_id)
+                if status:
+                    query = query.where(DealCalculation.status == status)
+                
+                query = query.order_by(desc(DealCalculation.calculation_date))
+                
+                result = await session.execute(query)
+                calculations = result.scalars().all()
+                
+                return [to_schema(calc, DealCalculationRead) for calc in calculations]
+        except Exception as e:
+            logger.error(f"Error getting deal calculations: {str(e)}")
+            return []
+
+    async def get_deal_calculation(self, calculation_id: int) -> Optional[DealCalculationRead]:
+        """Get a specific deal calculation by ID"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealCalculation)
+                    .options(joinedload(DealCalculation.deal_value_type))
+                    .where(DealCalculation.id == calculation_id)
+                )
+                calculation = result.scalar_one_or_none()
+                
+                if calculation:
+                    return to_schema(calculation, DealCalculationRead)
+                return None
+        except Exception as e:
+            logger.error(f"Error getting deal calculation {calculation_id}: {str(e)}")
+            return None
+
+    async def create_deal_calculation(self, data: DealCalculationCreate) -> DealCalculationRead:
+        """Create a new deal calculation"""
+        try:
+            async with get_async_session() as session:
+                calculation = DealCalculation(
+                    rebate_agreement_id=data.rebate_agreement_id,
+                    product_id=data.product_id,
+                    calculation_date=data.calculation_date,
+                    quantity_processed=data.quantity_processed,
+                    amount_processed=data.amount_processed,
+                    deal_value_applied=data.deal_value_applied,
+                    deal_value_type_id=data.deal_value_type_id,
+                    calculation_method=data.calculation_method,
+                    calculation_notes=data.calculation_notes,
+                    status=data.status,
+                    modified_by=data.modified_by,
+                    created_by=data.created_by
+                )
+                
+                session.add(calculation)
+                await session.commit()
+                await session.refresh(calculation)
+                
+                # Load the related deal_value_type for the response
+                await session.refresh(calculation, ['deal_value_type'])
+                
+                return to_schema(calculation, DealCalculationRead)
+        except Exception as e:
+            logger.error(f"Error creating deal calculation: {str(e)}")
+            raise
+
+    async def update_deal_calculation(self, calculation_id: int, data: DealCalculationUpdate) -> Optional[DealCalculationRead]:
+        """Update a deal calculation"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealCalculation).where(DealCalculation.id == calculation_id)
+                )
+                calculation = result.scalar_one_or_none()
+                
+                if not calculation:
+                    return None
+                
+                # Update fields
+                update_data = data.model_dump(exclude_unset=True)
+                for field, value in update_data.items():
+                    if hasattr(calculation, field):
+                        setattr(calculation, field, value)
+                
+                calculation.modified_by = data.modified_by
+                calculation.modified = datetime.utcnow()
+                
+                await session.commit()
+                await session.refresh(calculation)
+                await session.refresh(calculation, ['deal_value_type'])
+                
+                return to_schema(calculation, DealCalculationRead)
+        except Exception as e:
+            logger.error(f"Error updating deal calculation {calculation_id}: {str(e)}")
+            return None
+
+    async def delete_deal_calculation(self, calculation_id: int, soft_delete: bool = True) -> bool:
+        """Delete a deal calculation"""
+        try:
+            async with get_async_session() as session:
+                result = await session.execute(
+                    select(DealCalculation).where(DealCalculation.id == calculation_id)
+                )
+                calculation = result.scalar_one_or_none()
+                
+                if not calculation:
+                    return False
+                
+                if soft_delete:
+                    calculation.active = False
+                    calculation.deleted_by = "system"
+                    calculation.deleted = datetime.utcnow()
+                else:
+                    await session.delete(calculation)
+                
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting deal calculation {calculation_id}: {str(e)}")
+            return False
+
+    # DEAL ANALYTICS METHODS
+    async def get_deal_analytics(self) -> Dict[str, Any]:
+        """Get comprehensive analytics for deals and rebate agreements"""
+        try:
+            async with get_async_session() as session:
+                # Total rebate agreements by type
+                vendor_agreements = await session.scalar(
+                    select(func.count(RebateAgreement.id))
+                    .where(RebateAgreement.agreement_type == "vendor")
+                ) or 0
+                
+                customer_agreements = await session.scalar(
+                    select(func.count(RebateAgreement.id))
+                    .where(RebateAgreement.agreement_type == "customer")
+                ) or 0
+                
+                # Deal calculations by status
+                pending_calculations = await session.scalar(
+                    select(func.count(DealCalculation.id))
+                    .where(DealCalculation.status == "pending")
+                ) or 0
+                
+                approved_calculations = await session.scalar(
+                    select(func.count(DealCalculation.id))
+                    .where(DealCalculation.status == "approved")
+                ) or 0
+                
+                paid_calculations = await session.scalar(
+                    select(func.count(DealCalculation.id))
+                    .where(DealCalculation.status == "paid")
+                ) or 0
+                
+                # Deal value types distribution
+                value_types_count = await session.scalar(
+                    select(func.count(DealValueType.id))
+                    .where(DealValueType.active == True)
+                ) or 0
+                
+                # Deal sources and types
+                deal_sources_count = await session.scalar(
+                    select(func.count(DealSource.id))
+                    .where(DealSource.active == True)
+                ) or 0
+                
+                deal_types_count = await session.scalar(
+                    select(func.count(DealType.id))
+                    .where(DealType.active == True)
+                ) or 0
+                
+                # Recent deal activity (last 30 days)
+                recent_calculations = await session.scalar(
+                    select(func.count(DealCalculation.id))
+                    .where(DealCalculation.created >= datetime.utcnow() - timedelta(days=30))
+                ) or 0
+                
+                # Total deal values
+                total_deal_values = await session.scalar(
+                    select(func.sum(DealCalculation.deal_value_applied))
+                    .where(DealCalculation.status.in_(["approved", "paid"]))
+                ) or Decimal("0")
+                
+                return {
+                    "rebate_agreements": {
+                        "total": vendor_agreements + customer_agreements,
+                        "vendor": vendor_agreements,
+                        "customer": customer_agreements
+                    },
+                    "deal_calculations": {
+                        "total": pending_calculations + approved_calculations + paid_calculations,
+                        "pending": pending_calculations,
+                        "approved": approved_calculations,
+                        "paid": paid_calculations
+                    },
+                    "deal_value_types": {
+                        "total": value_types_count
+                    },
+                    "deal_sources": {
+                        "total": deal_sources_count
+                    },
+                    "deal_types": {
+                        "total": deal_types_count
+                    },
+                    "recent_activity": {
+                        "calculations_last_30_days": recent_calculations
+                    },
+                    "financial_summary": {
+                        "total_deal_values": float(total_deal_values)
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Error getting deal analytics: {str(e)}")
+            return {}
+
+    async def get_deal_calculations_analytics(
+        self,
+        rebate_agreement_id: Optional[int] = None,
+        product_id: Optional[int] = None,
+        status: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get analytics for deal calculations with optional filtering"""
+        try:
+            async with get_async_session() as session:
+                # Build base query
+                query = select(DealCalculation)
+                
+                if rebate_agreement_id:
+                    query = query.where(DealCalculation.rebate_agreement_id == rebate_agreement_id)
+                if product_id:
+                    query = query.where(DealCalculation.product_id == product_id)
+                if status:
+                    query = query.where(DealCalculation.status == status)
+                
+                # Get calculations by status
+                status_counts = await session.execute(
+                    select(DealCalculation.status, func.count(DealCalculation.id))
+                    .group_by(DealCalculation.status)
+                )
+                status_distribution = {row[0]: row[1] for row in status_counts.all()}
+                
+                # Get total values processed
+                total_quantity = await session.scalar(
+                    select(func.sum(DealCalculation.quantity_processed))
+                    .where(query.whereclause) if query.whereclause else select(func.sum(DealCalculation.quantity_processed))
+                ) or Decimal("0")
+                
+                total_amount = await session.scalar(
+                    select(func.sum(DealCalculation.amount_processed))
+                    .where(query.whereclause) if query.whereclause else select(func.sum(DealCalculation.amount_processed))
+                ) or Decimal("0")
+                
+                total_deal_value = await session.scalar(
+                    select(func.sum(DealCalculation.deal_value_applied))
+                    .where(query.whereclause) if query.whereclause else select(func.sum(DealCalculation.deal_value_applied))
+                ) or Decimal("0")
+                
+                # Get average deal values
+                avg_deal_value = await session.scalar(
+                    select(func.avg(DealCalculation.deal_value_applied))
+                    .where(query.whereclause) if query.whereclause else select(func.avg(DealCalculation.deal_value_applied))
+                ) or Decimal("0")
+                
+                # Get calculation trends (last 7 days)
+                recent_calculations = await session.scalar(
+                    select(func.count(DealCalculation.id))
+                    .where(DealCalculation.created >= datetime.utcnow() - timedelta(days=7))
+                    .where(query.whereclause) if query.whereclause else select(func.count(DealCalculation.id))
+                    .where(DealCalculation.created >= datetime.utcnow() - timedelta(days=7))
+                ) or 0
+                
+                return {
+                    "status_distribution": status_distribution,
+                    "totals": {
+                        "quantity_processed": float(total_quantity),
+                        "amount_processed": float(total_amount),
+                        "deal_value_applied": float(total_deal_value)
+                    },
+                    "averages": {
+                        "deal_value": float(avg_deal_value)
+                    },
+                    "trends": {
+                        "calculations_last_7_days": recent_calculations
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Error getting deal calculations analytics: {str(e)}")
+            return {}
+
+    async def get_rebate_agreements_by_brand(
+        self,
+        brand_id: int,
+        agreement_type: Optional[str] = None,
+        distributor_id: Optional[int] = None,
+        status: Optional[str] = None,
+        deal_type_id: Optional[int] = None,
+        deal_source_id: Optional[int] = None,
+        store: Optional[str] = None
+    ) -> List[RebateAgreementRead]:
+        """Get rebate agreements filtered by brand (via associated products)."""
+        async with get_async_session() as session:
+            # Join RebateAgreement -> RebateAgreementProduct -> ProductModel
+            stmt = select(RebateAgreement).join(RebateAgreement.products).join(RebateAgreementProduct.product).where(ProductModel.brand_id == brand_id)
+            if agreement_type:
+                stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
+            if distributor_id:
+                stmt = stmt.where(RebateAgreement.distributor_id == distributor_id)
+            if status:
+                stmt = stmt.where(RebateAgreement.status == status)
+            if deal_type_id:
+                stmt = stmt.where(RebateAgreement.deal_type_id == deal_type_id)
+            if deal_source_id:
+                stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
+            if store:
+                stmt = stmt.where(RebateAgreement.store == store)
+            agreements = (await session.execute(stmt)).scalars().all()
+            return [await self._build_rebate_agreement_response(session, agreement) for agreement in agreements]
 
 storage = SQLStorage()

@@ -8,6 +8,8 @@ httpx
 pydantic-settings
 pyjwt
 pandas 
+pyarrow
 numpy
 alembic
 requests
+aiohttp

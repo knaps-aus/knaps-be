@@ -81,11 +81,16 @@ async def delete_brand(brand_uuid: str):
         raise HTTPException(status_code=404, detail="Brand not found")
     return Response(status_code=204)
 
-@router.get("/distributor/{distributor_uuid}", response_model=List[BrandRead])
-async def get_brands_by_distributor(distributor_uuid: str):
+@router.get("/distributor/{distributor_id}", response_model=List[BrandRead])
+async def get_brands_by_distributor(distributor_id: str):
     """Get all brands for a specific distributor"""
     # First get the distributor to get its ID
-    distributor = await storage.get_distributor_by_uuid(distributor_uuid)
+    try:
+        distributor_id_int = int(distributor_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid distributor ID format")
+    
+    distributor = await storage.get_distributor(distributor_id_int)
     if not distributor:
         raise HTTPException(status_code=404, detail="Distributor not found")
     

@@ -27,7 +27,7 @@ async def drop_all_tables():
     async with engine.begin() as conn:
         dialect_name = conn.dialect.name
         if dialect_name == "sqlite":
-            # SQLite doesn't support DROP SCHEMA, just drop all tables
+        # SQLite doesn't support DROP SCHEMA, just drop all tables
             await conn.run_sync(Base.metadata.drop_all)
         else:
             await conn.execute(text("DROP SCHEMA public CASCADE"))
@@ -57,7 +57,7 @@ async def init_db(drop_existing: bool = True, load_ctc_data: bool = False, load_
     if load_ctc_data:
         try:
             logger.info("Initializing CTC categories data...")
-            from .ctc_init import initialize_ctc_categories
+            from .init_ctc import initialize_ctc_categories
             
             # Run the async initialization directly
             success = await initialize_ctc_categories()
@@ -70,22 +70,91 @@ async def init_db(drop_existing: bool = True, load_ctc_data: bool = False, load_
             logger.error(f"Failed to initialize CTC data: {e}")
             # Don't fail the entire startup if CTC loading fails
     
-    # Load brands data if requested
+    # Load distributors data FIRST (before brands)
+    try:
+        logger.info("Initializing enhanced distributors data...")
+        from .init_distributors import initialize_distributors_data
+        
+        # Run the async initialization directly
+        success = await initialize_distributors_data()
+        
+        if success:
+            logger.info("Enhanced distributors data initialized successfully")
+        else:
+            logger.warning("Enhanced distributors initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize distributors data: {e}")
+        # Don't fail the entire startup if distributors loading fails
+    
+    # Load brands data AFTER distributors (if requested)
     if load_brands_data:
         try:
-            logger.info("Initializing brands and distributors data...")
-            from .brands_init import initialize_brands_data
+            logger.info("Initializing brands data...")
+            from .init_brands import initialize_brands_data
             
             # Run the async initialization directly
             success = await initialize_brands_data()
             
             if success:
-                logger.info("Brands and distributors data initialized successfully")
+                logger.info("Brands data initialized successfully")
             else:
-                logger.warning("Brands and distributors initialization failed or not needed")
+                logger.warning("Brands initialization failed or not needed")
         except Exception as e:
             logger.error(f"Failed to initialize brands data: {e}")
             # Don't fail the entire startup if brands loading fails
+
+    # Load products data
+    try:
+        logger.info("Initializing products data...")
+        from .init_products import initialize_products_data
+        await initialize_products_data()
+        logger.info("Products data initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize products data: {e}")
+
+    # Load deals data
+    try:
+        logger.info("Initializing deals data...")
+        from .init_deals import initialize_deals_data
+        success = await initialize_deals_data()
+        if success:
+            logger.info("Deals data initialized successfully")
+        else:
+            logger.warning("Deals initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize deals data: {e}")
+
+    # Load features and benefits data
+    try:
+        logger.info("Initializing features and benefits data...")
+        from .init_features_benefits import initialize_features_benefits_data
+        
+        # Run the async initialization directly
+        success = await initialize_features_benefits_data()
+        
+        if success:
+            logger.info("Features and benefits data initialized successfully")
+        else:
+            logger.warning("Features and benefits initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize features and benefits data: {e}")
+        # Don't fail the entire startup if features and benefits loading fails
+
+    # Load CTC attributes data
+    try:
+        logger.info("Initializing CTC attributes data...")
+        from .init_ctc_attributes import initialize_ctc_attributes_data
+        
+        # Run the async initialization directly
+        success = await initialize_ctc_attributes_data()
+        
+        if success:
+            logger.info("CTC attributes data initialized successfully")
+        else:
+            logger.warning("CTC attributes initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize CTC attributes data: {e}")
+        # Don't fail the entire startup if CTC attributes loading fails
 
 def get_async_session():
     """Get the async session factory. Raises an error if not initialized."""

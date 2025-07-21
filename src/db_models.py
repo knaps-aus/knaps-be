@@ -506,6 +506,152 @@ CTCCategory.ctc_attributes = relationship("CTCAttribute", back_populates="catego
 
 ### DISTRIBUTOR AND BRAND MODELS ###
 
+class Purchaser(Base):
+    """Stores purchaser information"""
+    __tablename__ = "purchasers"
+    
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    icon_owner = Column(String, nullable=True)
+    
+    # Relationships
+    distributors = relationship("Distributor", back_populates="purchaser")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_purchasers_uuid', 'uuid'),
+        Index('idx_purchasers_code', 'code'),
+        Index('idx_purchasers_store', 'store'),
+    )
+
+
+class Contact(Base):
+    """Stores contact information for distributors"""
+    __tablename__ = "contacts"
+    
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    
+    # Contact details
+    title_code = Column(String, nullable=True)
+    title_name = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    bounced_email = Column(Boolean, nullable=False, default=False)
+    no_email = Column(Boolean, nullable=False, default=False)
+    landline = Column(String, nullable=True)
+    mobile = Column(String, nullable=True)
+    website = Column(String, nullable=True)
+    comment = Column(Text, nullable=True)
+    
+    # Visibility settings
+    visible_to_all = Column(Boolean, nullable=False, default=True)
+    visible_to_group = Column(Boolean, nullable=False, default=True)
+    is_default = Column(Boolean, nullable=False, default=False)
+    
+    # Denormalized contact type information
+    contact_type_code = Column(String, nullable=True)
+    contact_type_name = Column(String, nullable=True)
+    
+    # Foreign keys
+    distributor_id = Column(Integer, ForeignKey("distributors.id", ondelete="CASCADE"), nullable=False)
+    default_address_id = Column(Integer, ForeignKey("addresses.id"), nullable=True)
+    
+    # Relationships
+    distributor = relationship("Distributor", back_populates="contacts", foreign_keys=[distributor_id])
+    default_address = relationship("Address", foreign_keys=[default_address_id])
+    addresses = relationship("Address", back_populates="contact", foreign_keys="Address.contact_id")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_contacts_distributor_id', 'distributor_id'),
+        Index('idx_contacts_default_address_id', 'default_address_id'),
+        Index('idx_contacts_contact_type_code', 'contact_type_code'),
+    )
+
+
+class Address(Base):
+    """Stores denormalized address information"""
+    __tablename__ = "addresses"
+    
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=True)
+    store = Column(String, nullable=False)
+    
+    # Address details
+    address1 = Column(String, nullable=True)
+    address2 = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    latitude = Column(Numeric(10, 8), nullable=True)
+    longitude = Column(Numeric(11, 8), nullable=True)
+    is_default = Column(Boolean, nullable=False, default=False)
+    gln = Column(String, nullable=True)
+    
+    # Denormalized address type information
+    address_type_code = Column(String, nullable=True)
+    address_type_name = Column(String, nullable=True)
+    address_type_fa_icon = Column(String, nullable=True)
+    
+    # Denormalized state information
+    state_code = Column(String, nullable=True)
+    state_name = Column(String, nullable=True)
+    
+    # Denormalized postcode information
+    postcode_code = Column(String, nullable=True)
+    postcode_name = Column(String, nullable=True)
+    
+    # Denormalized suburb information
+    suburb_code = Column(String, nullable=True)
+    suburb_name = Column(String, nullable=True)
+    
+    # Foreign keys
+    distributor_id = Column(Integer, ForeignKey("distributors.id", ondelete="CASCADE"), nullable=True)
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True)
+    
+    # Relationships
+    distributor = relationship("Distributor", back_populates="addresses", foreign_keys=[distributor_id])
+    contact = relationship("Contact", back_populates="addresses", foreign_keys=[contact_id])
+    
+    # Indexes for better query performance
+    __table_args__ = (
+        Index('idx_addresses_distributor_id', 'distributor_id'),
+        Index('idx_addresses_contact_id', 'contact_id'),
+        Index('idx_addresses_state_code', 'state_code'),
+        Index('idx_addresses_postcode_code', 'postcode_code'),
+        Index('idx_addresses_address_type_code', 'address_type_code'),
+    )
+
+
 class Distributor(Base):
     """
     Stores distributor information
@@ -536,8 +682,40 @@ class Distributor(Base):
     fis_minimum_order = Column(String, nullable=True)
     default_extended_credits_code = Column(String, nullable=True)
     default_extended_credits_name = Column(String, nullable=True)
+    
+    # New fields from the enhanced data
+    purchaser_id = Column(Integer, ForeignKey("purchasers.id"), nullable=True)
+    source = Column(String, nullable=True)  # 'brands_data', 'api', etc.
+    
+    # Enhanced contact information
+    default_contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
+    
+    # Additional business information
+    company_number = Column(String, nullable=True)
+    permit_bup = Column(Boolean, nullable=False, default=False)
+    intranet_only = Column(Boolean, nullable=False, default=False)
+    accounting_only = Column(Boolean, nullable=False, default=False)
+    is_head_office = Column(Boolean, nullable=False, default=False)
+    
+    # Core group information (denormalized)
+    core_group_code = Column(String, nullable=True)
+    core_group_name = Column(String, nullable=True)
+    core_group_rank = Column(Integer, nullable=True)
+    
+    # Membership information
+    membership_code = Column(String, nullable=True)
+    membership_name = Column(String, nullable=True)
+    
+    # Communication settings
+    internal_email = Column(String, nullable=True)
+    google_place_id = Column(String, nullable=True)
+    enable_formatted_emails = Column(Boolean, nullable=False, default=True)
 
     # Relationships
+    purchaser = relationship("Purchaser", back_populates="distributors")
+    default_contact = relationship("Contact", foreign_keys=[default_contact_id])
+    contacts = relationship("Contact", back_populates="distributor", foreign_keys="Contact.distributor_id")
+    addresses = relationship("Address", back_populates="distributor")
     brands = relationship("Brand", back_populates="distributor")
     products = relationship("ProductModel", back_populates="distributor")
 
@@ -546,6 +724,8 @@ class Distributor(Base):
         Index('idx_distributors_uuid', 'uuid'),
         Index('idx_distributors_code', 'code'),
         Index('idx_distributors_store', 'store'),
+        Index('idx_distributors_purchaser_id', 'purchaser_id'),
+        Index('idx_distributors_default_contact_id', 'default_contact_id'),
     )
 
 
@@ -599,34 +779,52 @@ class RebateAgreement(Base):
 
     id = Column(Integer, primary_key=True)
     uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
-    agreement_type = Column(
-        Enum("vendor", "customer", name="agreement_types"), nullable=False
-    )
+    
+    # Existing fields
+    agreement_type = Column(Enum("vendor", "customer", name="agreement_types"), nullable=False)
     distributor_id = Column(Integer, nullable=False)
-    description = Column(String, nullable=False)
-    start_date = Column(Date, nullable=False)
-    end_date = Column(Date, nullable=False)
-    calc_frequency = Column(
-        Enum(
-            "invoice",
-            "daily",
-            "monthly",
-            "quarterly",
-            "yearly",
-            name="calc_frequencies",
-        ),
-        nullable=False,
-    )
+    description = Column(String, nullable=True)  # Changed to nullable=True
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)  # Changed to nullable=True
+    calc_frequency = Column(Enum("invoice", "daily", "monthly", "quarterly", "yearly", name="calc_frequencies"), nullable=False)
     basis = Column(Enum("quantity", "amount", name="rebate_bases"), nullable=False)
-    rate_type = Column(
-        Enum("percentage", "per_unit", "fixed", name="rate_types"), nullable=False
-    )
+    rate_type = Column(Enum("percent", "per_unit", "fixed", "percentage", name="rate_types"), nullable=False)
     approval_required = Column(Boolean, default=False, nullable=False)
-    status = Column(
-        Enum("active", "expired", name="rebate_statuses"), default="active", nullable=False
-    )
+    status = Column(Enum("active", "expired", "Current", "Expired", name="rebate_statuses"), default="active", nullable=False)
 
-    # Relationships
+    # NEW FIELDS for scraped deals integration
+    # Deal classification
+    deal_type_id = Column(Integer, ForeignKey("deal_types.id"), nullable=True)
+    deal_source_id = Column(Integer, ForeignKey("deal_sources.id"), nullable=True)
+    
+    # Deal-specific pricing information
+    price_level_type_id = Column(Integer, ForeignKey("price_level_types.id"), nullable=True)
+    value_stor = Column(Numeric(12, 4), nullable=True)
+    value_stor_incl = Column(Numeric(12, 4), nullable=True)
+    value_hoff = Column(Numeric(12, 4), nullable=True)
+    value_hoff_incl = Column(Numeric(12, 4), nullable=True)
+    
+    # Deal timing
+    valid_start = Column(DateTime, nullable=True)
+    valid_end = Column(DateTime, nullable=True)
+    claim_start = Column(DateTime, nullable=True)
+    claim_end = Column(DateTime, nullable=True)
+    
+    # Deal status and metadata
+    bonus_status_code = Column(String, nullable=True)
+    bonus_status_name = Column(String, nullable=True)
+    deal_code = Column(String, nullable=True)  # Original deal code from scraped data
+    store = Column(String, nullable=True)
+    
+    # Audit fields
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String, nullable=False)
+    modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    modified_by = Column(String, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String, nullable=True)
+
+    # Relationships (existing)
     products = relationship(
         "RebateAgreementProduct", back_populates="agreement", cascade="all, delete-orphan"
     )
@@ -636,6 +834,12 @@ class RebateAgreement(Base):
     claims = relationship(
         "RebateClaim", back_populates="agreement", cascade="all, delete-orphan"
     )
+    
+    # NEW RELATIONSHIPS
+    deal_type = relationship("DealType")
+    deal_source = relationship("DealSource")
+    price_level_type = relationship("PriceLevelType")
+    deal_calculations = relationship("DealCalculation", back_populates="rebate_agreement")
 
 
 class RebateAgreementProduct(Base):
@@ -663,20 +867,32 @@ class RebateTier(Base):
     )
     rebate_agreement_uuid = Column(String, nullable=False)
 
-    # Thresholds—use quantity fields for quantity-based deals,
-    # amount fields for amount-based deals.
+    # Existing threshold fields
     from_quantity = Column(Numeric, nullable=True)
     to_quantity = Column(Numeric, nullable=True)
     from_amount = Column(Numeric, nullable=True)
     to_amount = Column(Numeric, nullable=True)
 
-    # Rebate value and interpretation unit
+    # Existing rebate value fields
     rebate_value = Column(Numeric, nullable=False)
-    rebate_unit = Column(
-        Enum("percentage", "per_unit", "fixed", name="rebate_units"), nullable=False
-    )
+    rebate_unit = Column(Enum("percent", "per_unit", "fixed", name="rebate_units"), nullable=False)
 
+    # NEW FIELDS for deal-specific pricing
+    value_type_id = Column(Integer, ForeignKey("deal_value_types.id"), nullable=True)
+    calculated_on_price_level_id = Column(Integer, ForeignKey("price_level_types.id"), nullable=True)
+    
+    # Deal-specific value fields
+    value_stor = Column(Numeric(12, 4), nullable=True)
+    value_stor_incl = Column(Numeric(12, 4), nullable=True)
+    value_hoff = Column(Numeric(12, 4), nullable=True)
+    value_hoff_incl = Column(Numeric(12, 4), nullable=True)
+
+    # Relationships (existing)
     agreement = relationship("RebateAgreement", back_populates="tiers")
+    
+    # NEW RELATIONSHIPS
+    value_type = relationship("DealValueType")
+    calculated_on_price_level = relationship("PriceLevelType")
 
 
 class RebateClaim(Base):
@@ -690,23 +906,115 @@ class RebateClaim(Base):
     # TODO: Uncomment when invoice_lines table is available
     # invoice_line_id = Column(Integer, ForeignKey("invoice_lines.id"), nullable=True)
 
+    # Existing fields
     period_start = Column(Date, nullable=True)
     period_end = Column(Date, nullable=True)
-
     quantity_accumulated = Column(Numeric, nullable=True)
     amount_accumulated = Column(Numeric, nullable=True)
     rebate_amount = Column(Numeric, nullable=False)
-
-    status = Column(
-        Enum("To Calculate", "Pending", "Approved", "Paid", name="claim_statuses"),
-        default="To Calculate",
-        nullable=False,
-    )
+    status = Column(Enum("To Calculate", "Pending", "Approved", "Paid", name="claim_statuses"), default="To Calculate", nullable=False)
     calculation_date = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationships
+    # NEW FIELDS for deal-specific tracking
+    deal_calculation_id = Column(Integer, ForeignKey("deal_calculations.id"), nullable=True)
+    applied_deal_value = Column(Numeric(12, 4), nullable=True)
+    deal_value_type_id = Column(Integer, ForeignKey("deal_value_types.id"), nullable=True)
+    
+    # Deal timing tracking
+    deal_valid_from = Column(DateTime, nullable=True)
+    deal_valid_to = Column(DateTime, nullable=True)
+    
+    # Relationships (existing)
     agreement = relationship("RebateAgreement", back_populates="claims")
     product = relationship("ProductModel", back_populates="rebate_claims")
+    
+    # NEW RELATIONSHIPS
+    deal_calculation = relationship("DealCalculation")
+    deal_value_type = relationship("DealValueType")
+
+
+class DealValueType(Base):
+    """
+    Stores deal value types (e.g., "percent", "dollar", "unit")
+    """
+    __tablename__ = "deal_value_types"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    
+    code = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    symbol = Column(String, nullable=True)  # e.g., "%", "$"
+    
+    # Relationships
+    rebate_tiers = relationship("RebateTier", back_populates="value_type")
+    rebate_claims = relationship("RebateClaim", back_populates="deal_value_type")
+    deal_calculations = relationship("DealCalculation", back_populates="deal_value_type")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_deal_value_types_uuid', 'uuid'),
+        Index('idx_deal_value_types_code', 'code'),
+        Index('idx_deal_value_types_store', 'store'),
+    )
+
+
+class DealCalculation(Base):
+    """
+    Tracks individual deal calculations for audit and analysis
+    """
+    __tablename__ = "deal_calculations"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    
+    # Deal and product references
+    rebate_agreement_id = Column(Integer, ForeignKey("rebate_agreements.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    
+    # Calculation details
+    calculation_date = Column(DateTime, nullable=False)
+    quantity_processed = Column(Numeric(12, 4), nullable=True)
+    amount_processed = Column(Numeric(12, 4), nullable=True)
+    deal_value_applied = Column(Numeric(12, 4), nullable=False)
+    deal_value_type_id = Column(Integer, ForeignKey("deal_value_types.id"), nullable=False)
+    
+    # Calculation metadata
+    calculation_method = Column(String, nullable=True)  # e.g., "percentage", "fixed_amount"
+    calculation_notes = Column(Text, nullable=True)
+    
+    # Status
+    status = Column(Enum("pending", "approved", "rejected", "paid", name="calculation_statuses"), default="pending", nullable=False)
+    
+    # Relationships
+    rebate_agreement = relationship("RebateAgreement", back_populates="deal_calculations")
+    product = relationship("ProductModel")
+    deal_value_type = relationship("DealValueType", back_populates="deal_calculations")
+    rebate_claims = relationship("RebateClaim", back_populates="deal_calculation")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_deal_calculations_uuid', 'uuid'),
+        Index('idx_deal_calculations_agreement', 'rebate_agreement_id'),
+        Index('idx_deal_calculations_product', 'product_id'),
+        Index('idx_deal_calculations_date', 'calculation_date'),
+        Index('idx_deal_calculations_status', 'status'),
+    )
 
 
 ### FEATURES AND BENEFITS MODELS ###
@@ -840,7 +1148,7 @@ class MyPrice(Base):
     __tablename__ = "my_prices"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, unique=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, unique=False)
     uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
     active = Column(Boolean, nullable=False, default=True)
 
@@ -878,3 +1186,188 @@ class MyPrice(Base):
     # Relationships
     product = relationship("ProductModel", back_populates="my_price", uselist=False)
 
+
+### PRICE LEVEL TYPE MODELS ###
+
+class PriceLevelType(Base):
+    """
+    Stores price level types (e.g., "trade", "invoice", "net", "go", "rrp", "catalogue")
+    """
+    __tablename__ = "price_level_types"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    is_incl = Column(Boolean, nullable=False, default=False)
+    apply_to_db = Column(Boolean, nullable=False, default=True)
+    price_type_code = Column(String, nullable=False)  # "buy" or "sell"
+    price_type_name = Column(String, nullable=False)  # "Buy Price" or "Sell Price"
+    parent_code = Column(String, nullable=True)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_price_level_types_uuid', 'uuid'),
+        Index('idx_price_level_types_code', 'code'),
+        Index('idx_price_level_types_store', 'store'),
+        Index('idx_price_level_types_price_type', 'price_type_code'),
+    )
+
+
+### DEAL MODELS ###
+
+class DealSource(Base):
+    """
+    Stores deal sources (e.g., "dist", "hoff", "nart")
+    """
+    __tablename__ = "deal_sources"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    for_hoff_only = Column(Boolean, nullable=False, default=False)
+
+    # Relationships
+    deal_types = relationship("DealType", back_populates="default_provider")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deal_sources_uuid', 'uuid'),
+        Index('idx_deal_sources_code', 'code'),
+        Index('idx_deal_sources_store', 'store'),
+    )
+
+
+class DealType(Base):
+    """
+    Stores deal types (e.g., "disc", "hoff", "vend", "prod", "brnd", "sellthru", "ppro", "cmpl")
+    """
+    __tablename__ = "deal_types"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    code = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    rank = Column(Integer, nullable=False, default=1)
+    bonus_class = Column(String, nullable=False)
+    claimable = Column(Boolean, nullable=False, default=False)
+    deductable = Column(Boolean, nullable=False, default=True)
+
+    # Foreign key to deal source
+    default_provider_id = Column(
+        Integer,
+        ForeignKey("deal_sources.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+
+    # Relationships
+    default_provider = relationship("DealSource", back_populates="deal_types")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deal_types_uuid', 'uuid'),
+        Index('idx_deal_types_code', 'code'),
+        Index('idx_deal_types_store', 'store'),
+        Index('idx_deal_types_rank', 'rank'),
+        Index('idx_deal_types_bonus_class', 'bonus_class'),
+    )
+
+# === CTC LINK-TYPES MODELS ===
+
+class CTCTypeLink(Base):
+    """
+    Stores CTC type linking relationships
+    Links one product type to another product type
+    """
+    __tablename__ = "ctc_type_links"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    
+    # Source type (the type that has the link)
+    source_type_id = Column(Integer, nullable=False, index=True)
+    source_type_name = Column(String, nullable=False)
+    
+    # Target type (the type that is linked to)
+    target_type_id = Column(Integer, nullable=False, index=True)
+    target_type_name = Column(String, nullable=False)
+    
+    # Metadata
+    scraped_at = Column(DateTime, nullable=False)
+    
+    # Indexes for better query performance
+    __table_args__ = (
+        Index('idx_ctc_type_links_source', 'source_type_id'),
+        Index('idx_ctc_type_links_target', 'target_type_id'),
+        Index('idx_ctc_type_links_scraped', 'scraped_at'),
+        UniqueConstraint('source_type_id', 'target_type_id', name='uq_type_link_relationship'),
+    )
+
+class CTCTypeOption(Base):
+    """
+    Stores all available type options for each source type
+    This is for reference and analysis purposes
+    """
+    __tablename__ = "ctc_type_options"
+
+    id = Column(Integer, primary_key=True)
+    uuid = Column(String, nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+    active = Column(Boolean, nullable=False, default=True)
+    modified_by = Column(String, nullable=False)
+    modified = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=False)
+    created = Column(DateTime, nullable=False)
+    deleted_by = Column(String, nullable=True)
+    deleted = Column(DateTime, nullable=True)
+    
+    # Source type (the type being queried)
+    source_type_id = Column(Integer, nullable=False, index=True)
+    source_type_name = Column(String, nullable=False)
+    
+    # Available option
+    option_type_id = Column(Integer, nullable=False, index=True)
+    option_type_name = Column(String, nullable=False)
+    
+    # Metadata
+    scraped_at = Column(DateTime, nullable=False)
+    
+    # Indexes for better query performance
+    __table_args__ = (
+        Index('idx_ctc_type_options_source', 'source_type_id'),
+        Index('idx_ctc_type_options_option', 'option_type_id'),
+        Index('idx_ctc_type_options_scraped', 'scraped_at'),
+        UniqueConstraint('source_type_id', 'option_type_id', name='uq_type_option_relationship'),
+    )
