@@ -118,7 +118,7 @@ The `brands_data.json` file contains an array of brand objects, each with:
 
 ## File Locations
 
-- `distributor/brands_data.json` - Source data file
+- `data_management/data/brands_data.json` - Source data file
 - `src/db_models.py` - Database models
 - `src/brands_init.py` - Import logic
 - `import_brands.py` - Standalone import script

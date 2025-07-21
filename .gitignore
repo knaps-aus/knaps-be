@@ -6,3 +6,6 @@ vite.config.ts.*
 *.tar.gz
 __pycache__
 *.code-workspace
+
+# Data files
+*.json
