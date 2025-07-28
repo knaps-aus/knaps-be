@@ -15,7 +15,7 @@ from .db_models import (
     # Features and Benefits models
     ClassFeaturesBenefits, TypeFeaturesBenefits, CategoryFeaturesBenefits,
     PriceLevelType, DealSource, DealType,
-    # New models
+    # Additional Models For Brand / Distributor 
     Purchaser, Contact, Address,
     # CTC Link-Types models
     CTCTypeLink, CTCTypeOption,
@@ -323,6 +323,9 @@ class SQLStorage:
             # Filter by core groups
             if core_groups and len(core_groups) > 0:
                 conditions.append(ProductModel.core_group.in_(core_groups))
+            else:
+                # If no core_groups specified, default to A,B,C,D,E
+                conditions.append(ProductModel.core_group.in_(['A', 'B', 'C', 'D', 'E']))
             
             # Filter by CTC hierarchy (class, type, category)
             if class_id is not None or type_id is not None or category_id is not None:
@@ -1266,11 +1269,17 @@ class SQLStorage:
         status: Optional[str] = None,
         deal_type_id: Optional[int] = None,
         deal_source_id: Optional[int] = None,
-        store: Optional[str] = None
+        store: Optional[str] = None,
+        product_class_id: Optional[int] = None,
+        product_type_id: Optional[int] = None,
+        product_category_id: Optional[int] = None
     ) -> List[RebateAgreementRead]:
         """Get rebate agreements with optional filtering."""
         async with get_async_session() as session:
-            stmt = select(RebateAgreement)
+            stmt = select(RebateAgreement).options(
+                selectinload(RebateAgreement.products),
+                selectinload(RebateAgreement.tiers)
+            )
             
             if agreement_type:
                 stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
@@ -1284,14 +1293,25 @@ class SQLStorage:
                 stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
             if store:
                 stmt = stmt.where(RebateAgreement.store == store)
-            
+            if product_class_id:
+                stmt = stmt.where(RebateAgreement.product_class_id == product_class_id)
+            if product_type_id:
+                stmt = stmt.where(RebateAgreement.product_type_id == product_type_id)
+            if product_category_id:
+                stmt = stmt.where(RebateAgreement.product_category_id == product_category_id)
             agreements = (await session.execute(stmt)).scalars().all()
             return [await self._build_rebate_agreement_response(session, agreement) for agreement in agreements]
     
     async def get_rebate_agreement(self, agreement_id: int) -> Optional[RebateAgreementRead]:
         """Get a specific rebate agreement by ID."""
         async with get_async_session() as session:
-            agreement = await session.get(RebateAgreement, agreement_id)
+            stmt = select(RebateAgreement).options(
+                selectinload(RebateAgreement.products),
+                selectinload(RebateAgreement.tiers)
+            ).where(RebateAgreement.id == agreement_id)
+            
+            result = await session.execute(stmt)
+            agreement = result.scalar_one_or_none()
             if not agreement:
                 return None
             return await self._build_rebate_agreement_response(session, agreement)
@@ -1427,7 +1447,9 @@ class SQLStorage:
     async def _check_overlapping_agreements(self, session, data: RebateAgreementCreate):
         """Check for overlapping agreements for the same distributor and products."""
         # This is a simplified check - in a real implementation, you might want more sophisticated logic
-        stmt = select(RebateAgreement).where(
+        stmt = select(RebateAgreement).options(
+            selectinload(RebateAgreement.products)
+        ).where(
             RebateAgreement.distributor_id == data.distributor_id,  # Fixed: use distributor_id
             RebateAgreement.agreement_type == data.agreement_type,
             RebateAgreement.status == "active"
@@ -1474,8 +1496,18 @@ class SQLStorage:
             )
             tiers.append(tier_response)
         
+        # Query database using brand details to get distributor_id and distributor_name
+        async with get_async_session() as session:
+            stmt = select(Distributor).where(Distributor.id == agreement.brand.distributor_id)
+            result = await session.execute(stmt)
+            distributor = result.scalar_one_or_none()
+            queried_distributor_id = distributor.id if distributor else None
+            queried_distributor_name = distributor.name if distributor else None
+        
+        
         return RebateAgreementRead(
             id=agreement.id,
+            uuid=agreement.uuid,
             agreement_type=agreement.agreement_type,
             distributor_id=agreement.distributor_id,  # Fixed: use distributor_id instead of party_id
             description=agreement.description,
@@ -1488,7 +1520,43 @@ class SQLStorage:
             products=product_ids,
             product_category_ids=category_ids,
             tiers=tiers,
-            status=agreement.status
+            status=agreement.status,
+            # NEW DEAL-SPECIFIC FIELDS
+            deal_type_id=agreement.deal_type_id,
+            deal_source_id=agreement.deal_source_id,
+            price_level_type_id=agreement.price_level_type_id,
+            value_stor=agreement.value_stor,
+            value_stor_incl=agreement.value_stor_incl,
+            value_hoff=agreement.value_hoff,
+            value_hoff_incl=agreement.value_hoff_incl,
+            valid_start=agreement.valid_start,
+            valid_end=agreement.valid_end,
+            claim_start=agreement.claim_start,
+            claim_end=agreement.claim_end,
+            bonus_status_code=agreement.bonus_status_code,
+            bonus_status_name=agreement.bonus_status_name,
+            deal_code=agreement.deal_code,
+            store=agreement.store,
+            # Deal Specific Fields 
+            deal_value_type_id=agreement.deal_value_type_id,
+            calculated_on_price_level_id=agreement.calculated_on_price_level_id,
+            
+            # CTC Based Relationship Filters 
+            product_class_id=agreement.product_class_id,
+            product_class_name=agreement.product_class.name if agreement.product_class else None,
+            product_type_id=agreement.product_type_id,
+            product_type_name=agreement.product_type.name if agreement.product_type else None,
+            product_category_id=agreement.product_category_id,
+            product_category_name=agreement.product_category.name if agreement.product_category else None,
+
+            # Brand / Distributor Filters 
+            brand_id=agreement.brand_id,
+            brand_name=agreement.brand.name if agreement.brand else None,
+            distributor_name=queried_distributor_name,
+            
+            # Product Filters
+            product_id=agreement.product_id,
+            product_name=agreement.product.name if agreement.product else None,
         )
 
     async def bulk_create_products(self, products: List[InsertProduct]) -> BulkProductCreateResult:
@@ -3720,12 +3788,18 @@ class SQLStorage:
         status: Optional[str] = None,
         deal_type_id: Optional[int] = None,
         deal_source_id: Optional[int] = None,
-        store: Optional[str] = None
+        store: Optional[str] = None,
+        product_class_id: Optional[int] = None,
+        product_type_id: Optional[int] = None,
+        product_category_id: Optional[int] = None
     ) -> List[RebateAgreementRead]:
         """Get rebate agreements filtered by brand (via associated products)."""
         async with get_async_session() as session:
             # Join RebateAgreement -> RebateAgreementProduct -> ProductModel
-            stmt = select(RebateAgreement).join(RebateAgreement.products).join(RebateAgreementProduct.product).where(ProductModel.brand_id == brand_id)
+            stmt = select(RebateAgreement).options(
+                selectinload(RebateAgreement.products),
+                selectinload(RebateAgreement.tiers)
+            ).join(RebateAgreement.products).join(RebateAgreementProduct.product).where(ProductModel.brand_id == brand_id)
             if agreement_type:
                 stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
             if distributor_id:
@@ -3738,7 +3812,192 @@ class SQLStorage:
                 stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
             if store:
                 stmt = stmt.where(RebateAgreement.store == store)
+            if product_class_id:
+                stmt = stmt.where(RebateAgreement.product_class_id == product_class_id)
+            if product_type_id:
+                stmt = stmt.where(RebateAgreement.product_type_id == product_type_id)
+            if product_category_id:
+                stmt = stmt.where(RebateAgreement.product_category_id == product_category_id)
             agreements = (await session.execute(stmt)).scalars().all()
             return [await self._build_rebate_agreement_response(session, agreement) for agreement in agreements]
+
+    async def get_rebate_agreements_by_product(
+        self,
+        product_id: int,
+        agreement_type: Optional[str] = None,
+        distributor_id: Optional[int] = None,
+        status: Optional[str] = None,
+        deal_type_id: Optional[int] = None,
+        deal_source_id: Optional[int] = None,
+        store: Optional[str] = None,
+        active_only: bool = True
+    ) -> List[RebateAgreementRead]:
+        """
+        Get rebate agreements that apply to a specific product.
+        
+        This method finds rebates that apply to the product either:
+        1. Directly through product association
+        2. Through category association (if the product belongs to a category that has rebates)
+        
+        Args:
+            product_id: The ID of the product to search for
+            agreement_type: Optional filter by agreement type (vendor/customer)
+            distributor_id: Optional filter by distributor
+            status: Optional filter by agreement status
+            deal_type_id: Optional filter by deal type
+            deal_source_id: Optional filter by deal source
+            store: Optional filter by store
+            active_only: Show only active agreements
+            
+        Returns:
+            List of rebate agreements that apply to the product
+        """
+        async with get_async_session() as session:
+            # First, get the product to find its distributor and categories
+            product = await session.get(ProductModel, product_id)
+            if not product:
+                return []
+            
+            # Build the base query for rebate agreements
+            stmt = select(RebateAgreement).options(
+                selectinload(RebateAgreement.products),
+                selectinload(RebateAgreement.tiers)
+            ).distinct()
+            
+            # Apply filters
+            if agreement_type:
+                stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
+            if distributor_id:
+                stmt = stmt.where(RebateAgreement.distributor_id == distributor_id)
+            if status:
+                stmt = stmt.where(RebateAgreement.status == status)
+            if deal_type_id:
+                stmt = stmt.where(RebateAgreement.deal_type_id == deal_type_id)
+            if deal_source_id:
+                stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
+            if store:
+                stmt = stmt.where(RebateAgreement.store == store)
+            if active_only:
+                stmt = stmt.where(RebateAgreement.status == "active")
+            
+            # Get product's category IDs
+            product_categories = await session.execute(
+                select(CTCCategory.id).where(CTCCategory.product_id == product_id)
+            )
+            category_ids = [cat.id for cat in product_categories.scalars().all()]
+            
+            # Find agreements that apply to this product either directly or through categories
+            # We need to join with RebateAgreementProduct to check both product_id and category_id
+            stmt = stmt.join(RebateAgreementProduct).where(
+                or_(
+                    # Direct product association
+                    RebateAgreementProduct.product_id == product_id,
+                    # Category association (if product has categories)
+                    and_(
+                        RebateAgreementProduct.category_id.in_(category_ids),
+                        RebateAgreementProduct.category_id.isnot(None)
+                    ) if category_ids else False
+                )
+            )
+            
+            agreements = (await session.execute(stmt)).scalars().all()
+            return [await self._build_rebate_agreement_response(session, agreement) for agreement in agreements]
+
+    async def apply_deals_by_brand(
+        self,
+        brand_id: int,
+        agreement_type: Optional[str] = None,
+        distributor_id: Optional[int] = None,
+        status: Optional[str] = None,
+        deal_type_id: Optional[int] = None,
+        deal_source_id: Optional[int] = None,
+        store: Optional[str] = None,
+        active_only: bool = True
+    ) -> List[RebateAgreementRead]:
+        """
+        Apply deals based on brand through distributor relationships.
+        
+        This method finds rebate agreements that apply to a brand by:
+        1. Finding the brand's distributor
+        2. Finding all rebate agreements for that distributor that are brand-type deals
+        3. Optionally filtering by other criteria
+        
+        Args:
+            brand_id: The ID of the brand to find deals for
+            agreement_type: Optional filter by agreement type (vendor/customer)
+            distributor_id: Optional filter by distributor (overrides brand's distributor)
+            status: Optional filter by agreement status
+            deal_type_id: Optional filter by deal type
+            deal_source_id: Optional filter by deal source
+            store: Optional filter by store
+            active_only: Show only active agreements
+            
+        Returns:
+            List of rebate agreements that apply to the brand
+        """
+        async with get_async_session() as session:
+            # First, get the brand to find its distributor
+            brand = await session.get(Brand, brand_id)
+            if not brand:
+                return []
+            
+            # Use the brand's distributor unless a specific distributor is requested
+            target_distributor_id = distributor_id if distributor_id is not None else brand.distributor_id
+            
+            # Build the base query for rebate agreements
+            stmt = select(RebateAgreement).options(
+                selectinload(RebateAgreement.products),
+                selectinload(RebateAgreement.tiers)
+            ).distinct()
+            
+            # Apply filters
+            if agreement_type:
+                stmt = stmt.where(RebateAgreement.agreement_type == agreement_type)
+            if target_distributor_id:
+                stmt = stmt.where(RebateAgreement.distributor_id == target_distributor_id)
+            if status:
+                stmt = stmt.where(RebateAgreement.status == status)
+            if deal_type_id:
+                stmt = stmt.where(RebateAgreement.deal_type_id == deal_type_id)
+            if deal_source_id:
+                stmt = stmt.where(RebateAgreement.deal_source_id == deal_source_id)
+            if store:
+                stmt = stmt.where(RebateAgreement.store == store)
+            if active_only:
+                stmt = stmt.where(RebateAgreement.status == "Current")
+            
+            # For brand-based deals, we typically want brand rebate deals
+            # If no specific deal_type_id is provided, default to brand rebates
+            if deal_type_id is None:
+                # Get the brand rebate deal type ID
+                brand_deal_type = await session.execute(
+                    select(DealType).where(DealType.code == "brnd")
+                )
+                brand_deal_type = brand_deal_type.scalar_one_or_none()
+                if brand_deal_type:
+                    stmt = stmt.where(RebateAgreement.deal_type_id == brand_deal_type.id)
+            
+            # Execute the query
+            agreements = (await session.execute(stmt)).scalars().all()
+            
+            # Build the response with product associations
+            result = []
+            for agreement in agreements:
+                # For brand-based deals, we need to associate all products of this brand
+                # Get all products for this brand
+                brand_products = await session.execute(
+                    select(ProductModel.id).where(ProductModel.brand_id == brand_id)
+                )
+                product_ids = [p.id for p in brand_products.scalars().all()]
+                
+                # Build the response
+                agreement_response = await self._build_rebate_agreement_response(session, agreement)
+                
+                # Override the products list to include all brand products
+                agreement_response.products = product_ids
+                
+                result.append(agreement_response)
+            
+            return result
 
 storage = SQLStorage()

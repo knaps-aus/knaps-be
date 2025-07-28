@@ -39,7 +39,15 @@ async def init_db(drop_existing: bool = True, load_ctc_data: bool = False, load_
     global engine, AsyncSessionLocal
     DATABASE_URL = settings.database_url
 
-    engine = create_async_engine(DATABASE_URL, echo=False, future=True)
+    engine = create_async_engine(
+        DATABASE_URL, 
+        echo=False, 
+        future=True, 
+        pool_pre_ping=True, 
+        pool_recycle=1800, 
+        pool_size=10, 
+        max_overflow=20,
+    )
     AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     logger.info("Connecting to database")
@@ -112,6 +120,34 @@ async def init_db(drop_existing: bool = True, load_ctc_data: bool = False, load_
     except Exception as e:
         logger.error(f"Failed to initialize products data: {e}")
 
+    # Load price level types BEFORE deals (since deals reference them)
+    try:
+        logger.info("Initializing price level types...")
+        from .init_deals import initialize_deal_sources_and_types
+        success = await initialize_deal_sources_and_types()
+        if success:
+            logger.info("Price level types initialized successfully")
+        else:
+            logger.warning("Price level types initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize price level types: {e}")
+
+    # Load CTC attributes data
+    try:
+        logger.info("Initializing CTC attributes data...")
+        from .init_ctc_attributes import initialize_ctc_attributes_data
+        
+        # Run the async initialization directly
+        success = await initialize_ctc_attributes_data()
+        
+        if success:
+            logger.info("CTC attributes data initialized successfully")
+        else:
+            logger.warning("CTC attributes initialization failed or not needed")
+    except Exception as e:
+        logger.error(f"Failed to initialize CTC attributes data: {e}")
+        # Don't fail the entire startup if CTC attributes loading fails
+
     # Load deals data
     try:
         logger.info("Initializing deals data...")
@@ -140,25 +176,10 @@ async def init_db(drop_existing: bool = True, load_ctc_data: bool = False, load_
         logger.error(f"Failed to initialize features and benefits data: {e}")
         # Don't fail the entire startup if features and benefits loading fails
 
-    # Load CTC attributes data
-    try:
-        logger.info("Initializing CTC attributes data...")
-        from .init_ctc_attributes import initialize_ctc_attributes_data
-        
-        # Run the async initialization directly
-        success = await initialize_ctc_attributes_data()
-        
-        if success:
-            logger.info("CTC attributes data initialized successfully")
-        else:
-            logger.warning("CTC attributes initialization failed or not needed")
-    except Exception as e:
-        logger.error(f"Failed to initialize CTC attributes data: {e}")
-        # Don't fail the entire startup if CTC attributes loading fails
-
 def get_async_session():
     """Get the async session factory. Raises an error if not initialized."""
     if AsyncSessionLocal is None:
+        logger.error("Database not initialized. Call init_db() first.")
         raise RuntimeError("Database not initialized. Call init_db() first.")
     return AsyncSessionLocal()
 

@@ -129,6 +129,10 @@ class InsertProduct(ORMBase):
     features_and_benefits_codes: Optional[str] = None
     badges_codes: Optional[str] = None
     stock_unmanaged: bool = False
+    # CTC relationships
+    ctc_class_id: Optional[int] = None
+    ctc_type_id: Optional[int] = None
+    ctc_category_id: Optional[int] = None
 
 # Rebate models
 
@@ -182,7 +186,6 @@ class RebateAgreementCreate(ORMBase):
     products: List[int] = []           # product IDs this agreement applies to
     product_category_ids: List[int] = []  # alternatively or additionally, categories
     tiers: List[RebateTierCreate] = []  # tier definitions (if any)
-    
     # NEW FIELDS for deals
     deal_type_id: Optional[int] = None
     deal_source_id: Optional[int] = None
@@ -199,10 +202,19 @@ class RebateAgreementCreate(ORMBase):
     bonus_status_name: Optional[str] = None
     deal_code: Optional[str] = None
     store: Optional[str] = None
+    # NEW FIELDS for CTC/brand/product relationships
+    product_class_id: Optional[int] = None
+    product_type_id: Optional[int] = None
+    product_category_id: Optional[int] = None
+    brand_id: Optional[int] = None
+    product_id: Optional[int] = None
+    deal_calculation_id: Optional[int] = None
+    deal_value_type_id: Optional[int] = None
+    calculated_on_price_level_id: Optional[int] = None
 
 class RebateAgreementRead(ORMBase):
     id: int
-    uuid: str
+    uuid: Optional[str] = None
     agreement_type: str 
     distributor_id: int 
     description: Optional[str] = None  # Changed to Optional
@@ -216,6 +228,42 @@ class RebateAgreementRead(ORMBase):
     product_category_ids: List[int] 
     tiers: List[RebateTierRead] 
     status: Literal["active", "expired", "Current", "Expired"]
+    deal_type_id: Optional[int] = None
+    deal_source_id: Optional[int] = None
+    price_level_type_id: Optional[int] = None
+    value_stor: Optional[Decimal] = None
+    value_stor_incl: Optional[Decimal] = None
+    value_hoff: Optional[Decimal] = None
+    value_hoff_incl: Optional[Decimal] = None
+    valid_start: Optional[datetime] = None
+    valid_end: Optional[datetime] = None
+    claim_start: Optional[datetime] = None
+    claim_end: Optional[datetime] = None
+    bonus_status_code: Optional[str] = None
+    bonus_status_name: Optional[str] = None
+    deal_code: Optional[str] = None
+    store: Optional[str] = None
+
+    # CTC Based Relationship Filters 
+    product_class_id: Optional[int] = None
+    product_class_name: Optional[str] = None
+    product_type_id: Optional[int] = None
+    product_type_name: Optional[str] = None
+    product_category_id: Optional[int] = None
+    product_category_name: Optional[str] = None
+    
+    #  Brand / Distributor
+    brand_id: Optional[int] = None
+    brand_name: Optional[str] = None
+    distributor_id: Optional[int] = None
+    distributor_name: Optional[str] = None
+
+    # Product Filter 
+    product_id: Optional[int] = None
+    product_name: Optional[str] = None
+    # deal_calculation_id: Optional[int] = None
+    deal_value_type_id: Optional[int] = None
+    calculated_on_price_level_id: Optional[int] = None
 
 
 # NEW MODELS FOR DEAL VALUE TYPES AND CALCULATIONS
@@ -702,6 +750,93 @@ class BrandUpdate(ORMBase):
 #####
 
 
+### CTC MODELS ###
+
+# CTC Models
+class CTCBase(ORMBase):
+    """Base model for CTC entities"""
+    id: Optional[int] = None
+    uuid: Optional[str] = None
+    active: bool = True
+    modified_by: str
+    modified: datetime
+    created_by: str
+    created: datetime
+    deleted_by: Optional[str] = None
+    deleted: Optional[datetime] = None
+    code: str
+    name: str
+    store: str
+
+
+class CTCClassCreate(ORMBase):
+    """Model for creating a new CTC class"""
+    code: str
+    name: str
+    store: str
+    active: bool = True
+    modified_by: str = "system"
+    created_by: str = "system"
+
+
+class CTCClassRead(CTCBase):
+    """Model for reading CTC class data"""
+    pass
+
+
+class CTCClassUpdate(ORMBase):
+    """Model for updating CTC class data"""
+    code: Optional[str] = None
+    name: Optional[str] = None
+    store: Optional[str] = None
+    active: Optional[bool] = None
+    modified_by: str = "system"
+
+
+class CTCTypeCreate(ORMBase):
+    """Model for creating a new CTC type"""
+    code: str
+    name: str
+    store: str
+    class_id: int
+    active: bool = True
+    modified_by: str = "system"
+    created_by: str = "system"
+
+
+class CTCTypeRead(CTCBase):
+    """Model for reading CTC type data"""
+    class_id: int
+
+
+class CTCTypeUpdate(ORMBase):
+    """Model for updating CTC type data"""
+    code: Optional[str] = None
+    name: Optional[str] = None
+    store: Optional[str] = None
+    class_id: Optional[int] = None
+    active: Optional[bool] = None
+    modified_by: str = "system"
+
+
+class CTCCategoryCreate(ORMBase):
+    """Model for creating a new CTC category"""
+    code: str
+    name: str
+    store: str
+    type_id: int
+    product_id: Optional[int] = None
+    active: bool = True
+    modified_by: str = "system"
+    created_by: str = "system"
+
+
+class CTCCategoryRead(CTCBase):
+    """Model for reading CTC category data"""
+    type_id: int
+    product_id: Optional[int] = None
+
+
 class Product(ORMBase):
     id: Optional[int] = None
     uuid: Optional[str] = None  # Optional UUID field for updates
@@ -733,6 +868,14 @@ class Product(ORMBase):
     stock_unmanaged: Optional[bool] = None
     brand: Optional[BrandRead] = None
     distributor: Optional[DistributorRead] = None
+    ctc_class: Optional[CTCClassRead] = None
+    ctc_type: Optional[CTCTypeRead] = None
+    ctc_category: Optional[CTCCategoryRead] = None
+    # CTC relationship IDs
+    ctc_class_id: Optional[int] = None
+    ctc_type_id: Optional[int] = None
+    ctc_category_id: Optional[int] = None
+
 
 ###
 class CategoryAttributeSchema(ORMBase):
@@ -893,93 +1036,6 @@ class CategoryFeaturesBenefitsUpdate(ORMBase):
     category: Optional[str] = None
     tags: Optional[str] = None
     scraped_at: Optional[datetime] = None
-
-
-### CTC MODELS ###
-
-# CTC Models
-class CTCBase(ORMBase):
-    """Base model for CTC entities"""
-    id: Optional[int] = None
-    uuid: Optional[str] = None
-    active: bool = True
-    modified_by: str
-    modified: datetime
-    created_by: str
-    created: datetime
-    deleted_by: Optional[str] = None
-    deleted: Optional[datetime] = None
-    code: str
-    name: str
-    store: str
-
-
-class CTCClassCreate(ORMBase):
-    """Model for creating a new CTC class"""
-    code: str
-    name: str
-    store: str
-    active: bool = True
-    modified_by: str = "system"
-    created_by: str = "system"
-
-
-class CTCClassRead(CTCBase):
-    """Model for reading CTC class data"""
-    pass
-
-
-class CTCClassUpdate(ORMBase):
-    """Model for updating CTC class data"""
-    code: Optional[str] = None
-    name: Optional[str] = None
-    store: Optional[str] = None
-    active: Optional[bool] = None
-    modified_by: str = "system"
-
-
-class CTCTypeCreate(ORMBase):
-    """Model for creating a new CTC type"""
-    code: str
-    name: str
-    store: str
-    class_id: int
-    active: bool = True
-    modified_by: str = "system"
-    created_by: str = "system"
-
-
-class CTCTypeRead(CTCBase):
-    """Model for reading CTC type data"""
-    class_id: int
-
-
-class CTCTypeUpdate(ORMBase):
-    """Model for updating CTC type data"""
-    code: Optional[str] = None
-    name: Optional[str] = None
-    store: Optional[str] = None
-    class_id: Optional[int] = None
-    active: Optional[bool] = None
-    modified_by: str = "system"
-
-
-class CTCCategoryCreate(ORMBase):
-    """Model for creating a new CTC category"""
-    code: str
-    name: str
-    store: str
-    type_id: int
-    product_id: Optional[int] = None
-    active: bool = True
-    modified_by: str = "system"
-    created_by: str = "system"
-
-
-class CTCCategoryRead(CTCBase):
-    """Model for reading CTC category data"""
-    type_id: int
-    product_id: Optional[int] = None
 
 
 class CTCCategoryUpdate(ORMBase):

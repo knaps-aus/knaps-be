@@ -5,11 +5,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Any, Union, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import init_db, get_async_session
-from .db_models import Distributor, Brand, ProductModel, PriceLevel, MyPrice
+from .db_models import Distributor, Brand, ProductModel, PriceLevel, MyPrice, CTCClass, CTCType, CTCCategory
 
 import logging
 logger = logging.getLogger(__name__)
@@ -93,7 +93,137 @@ async def get_or_create_brand(session: AsyncSession, data: Dict[str, Any], distr
     return brand
 
 
-async def create_or_update_product(session: AsyncSession, data: Dict[str, Any], brand: Brand, distributor: Distributor) -> ProductModel:
+async def get_or_create_ctc_class(session: AsyncSession, data: Dict[str, Any]) -> Optional[CTCClass]:
+    """Get or create CTC class from product data"""
+    if not data:
+        return None
+    
+    # Try to find by code first
+    stmt = select(CTCClass).where(CTCClass.id == data.get("id"))
+    result = await session.execute(stmt)
+    ctc_class = result.scalar_one_or_none()
+    if ctc_class:
+        logger.debug(f"Found existing CTC class by code: {data.get('code')}")
+        return ctc_class
+    
+    # If not found by code, try by ID
+    if data.get("id"):
+        stmt = select(CTCClass).where(CTCClass.id == data["id"])
+        result = await session.execute(stmt)
+        ctc_class = result.scalar_one_or_none()
+        if ctc_class:
+            logger.debug(f"Found existing CTC class by ID: {data['id']}")
+            return ctc_class
+    
+    # Create new CTC class
+    ctc_class = CTCClass(
+        id=data.get("id"),
+        active=data.get("active", True),
+        modified_by=data.get("modified_by", "import"),
+        modified=parse_dt(data.get("modified")),
+        created_by=data.get("created_by", "import"),
+        created=parse_dt(data.get("created")),
+        deleted_by=data.get("deleted_by"),
+        deleted=parse_dt(data.get("deleted")),
+        code=data.get("code"),
+        name=data.get("name"),
+        store=data.get("store", "QHOF"),
+    )
+    session.add(ctc_class)
+    await session.flush()
+    logger.debug(f"Created new CTC class: {data.get('code')}")
+    return ctc_class
+
+
+async def get_or_create_ctc_type(session: AsyncSession, data: Dict[str, Any], ctc_class: CTCClass) -> Optional[CTCType]:
+    """Get or create CTC type from product data"""
+    if not data:
+        return None
+    
+    # Try to find by code first
+    stmt = select(CTCType).where(CTCType.code == data.get("code"))
+    result = await session.execute(stmt)
+    ctc_type = result.scalar_one_or_none()
+    if ctc_type:
+        logger.debug(f"Found existing CTC type by code: {data.get('code')}")
+        return ctc_type
+    
+    # If not found by code, try by ID
+    if data.get("id"):
+        stmt = select(CTCType).where(CTCType.id == data["id"])
+        result = await session.execute(stmt)
+        ctc_type = result.scalar_one_or_none()
+        if ctc_type:
+            logger.debug(f"Found existing CTC type by ID: {data['id']}")
+            return ctc_type
+    
+    # Create new CTC type
+    ctc_type = CTCType(
+        id=data.get("id"),
+        active=data.get("active", True),
+        modified_by=data.get("modified_by", "import"),
+        modified=parse_dt(data.get("modified")),
+        created_by=data.get("created_by", "import"),
+        created=parse_dt(data.get("created")),
+        deleted_by=data.get("deleted_by"),
+        deleted=parse_dt(data.get("deleted")),
+        code=data.get("code"),
+        name=data.get("name"),
+        store=data.get("store", "QHOF"),
+        class_id=ctc_class.id,
+    )
+    session.add(ctc_type)
+    await session.flush()
+    logger.debug(f"Created new CTC type: {data.get('code')}")
+    return ctc_type
+
+
+async def get_or_create_ctc_category(session: AsyncSession, data: Dict[str, Any], ctc_type: CTCType) -> Optional[CTCCategory]:
+    """Get or create CTC category from product data"""
+    if not data:
+        return None
+    
+    # Try to find by code first
+    stmt = select(CTCCategory).where(CTCCategory.code == data.get("code"))
+    result = await session.execute(stmt)
+    ctc_category = result.scalar_one_or_none()
+    if ctc_category:
+        logger.debug(f"Found existing CTC category by code: {data.get('code')}")
+        return ctc_category
+    
+    # If not found by code, try by ID
+    if data.get("id"):
+        stmt = select(CTCCategory).where(CTCCategory.id == data["id"])
+        result = await session.execute(stmt)
+        ctc_category = result.scalar_one_or_none()
+        if ctc_category:
+            logger.debug(f"Found existing CTC category by ID: {data['id']}")
+            return ctc_category
+    
+    # Create new CTC category
+    ctc_category = CTCCategory(
+        id=data.get("id"),
+        active=data.get("active", True),
+        modified_by=data.get("modified_by", "import"),
+        modified=parse_dt(data.get("modified")),
+        created_by=data.get("created_by", "import"),
+        created=parse_dt(data.get("created")),
+        deleted_by=data.get("deleted_by"),
+        deleted=parse_dt(data.get("deleted")),
+        code=data.get("code"),
+        name=data.get("name"),
+        store=data.get("store", "QHOF"),
+        type_id=ctc_type.id,
+    )
+    session.add(ctc_category)
+    await session.flush()
+    logger.debug(f"Created new CTC category: {data.get('code')}")
+    return ctc_category
+
+
+async def create_or_update_product(session: AsyncSession, data: Dict[str, Any], brand: Brand, distributor: Distributor, 
+                                  ctc_class: Optional[CTCClass] = None, ctc_type: Optional[CTCType] = None, 
+                                  ctc_category: Optional[CTCCategory] = None) -> ProductModel:
     # First try to find by product_code (which has unique constraint)
     stmt = select(ProductModel).where(ProductModel.product_code == data.get("code"))
     result = await session.execute(stmt)
@@ -108,12 +238,18 @@ async def create_or_update_product(session: AsyncSession, data: Dict[str, Any], 
         if product:
             logger.debug(f"Found existing product by ID: {data['id']}")
 
-    core_group = data.get("core_group")
+    # Handle core_group from parquet file (core_group_code) or JSON files (core_group object)
     core_group_code = None
-    if isinstance(core_group, dict):
-        core_group_code = core_group.get("code")
-    elif core_group:
-        core_group_code = str(core_group)
+    if "core_group_code" in data:
+        # From parquet file - direct string value
+        core_group_code = data.get("core_group_code")
+    elif "core_group" in data:
+        # From JSON files - object with code field
+        core_group = data.get("core_group")
+        if isinstance(core_group, dict):
+            core_group_code = core_group.get("code")
+        elif core_group:
+            core_group_code = str(core_group)
 
     fields = dict(
         uuid=str(data.get("uuid", "") or data.get("id")),
@@ -157,6 +293,10 @@ async def create_or_update_product(session: AsyncSession, data: Dict[str, Any], 
         modified_at=parse_dt(data.get("modified")),
         deleted_by=data.get("deleted_by"),
         deleted_at=parse_dt(data.get("deleted")),
+        # CTC relationships
+        ctc_class_id=ctc_class.id if ctc_class else data.get("ctc_class_id"),
+        ctc_type_id=ctc_type.id if ctc_type else data.get("ctc_type_id"),
+        ctc_category_id=ctc_category.id if ctc_category else data.get("ctc_category_id"),
     )
 
     if product:
@@ -337,8 +477,33 @@ async def import_products_from_parquet():
                     # Create or update product
                     try:
                         logger.debug(f"Creating/updating product: {pdata.get('code', 'unknown')}")
-                        product = await create_or_update_product(session, pdata, brand, distributor)
+                        
+                        # Handle CTC data if present
+                        ctc_class = None
+                        ctc_type = None
+                        ctc_category = None
+                        
+                        # Check for CTC data in product
+                        if "product_class" in pdata and pdata["product_class"]:
+                            ctc_class = await get_or_create_ctc_class(session, pdata["product_class"])
+                            logger.debug(f"✓ CTC Class processed: {pdata['product_class'].get('code', 'unknown')}")
+                        
+                        if "product_type" in pdata and pdata["product_type"]:
+                            if ctc_class:
+                                ctc_type = await get_or_create_ctc_type(session, pdata["product_type"], ctc_class)
+                                logger.debug(f"✓ CTC Type processed: {pdata['product_type'].get('code', 'unknown')}")
+                        
+                        if "product_category" in pdata and pdata["product_category"]:
+                            if ctc_type:
+                                ctc_category = await get_or_create_ctc_category(session, pdata["product_category"], ctc_type)
+                                logger.debug(f"✓ CTC Category processed: {pdata['product_category'].get('code', 'unknown')}")
+                        
+                        product = await create_or_update_product(session, pdata, brand, distributor, ctc_class, ctc_type, ctc_category)
                         logger.debug(f"✓ Product processed: {pdata.get('code', 'unknown')} (ID: {product.id})")
+                        
+                        # Log core group information for debugging
+                        if product.core_group:
+                            logger.debug(f"  - Core group: {product.core_group}")
                     except Exception as e:
                         logger.error(f"✗ Error creating product {pdata.get('code', 'unknown')}: {str(e)}")
                         error_count += 1
@@ -379,6 +544,19 @@ async def import_products_from_parquet():
                     continue
 
             await session.commit()
+            
+            # Log summary of imported products with core groups
+            core_group_summary = await session.execute(
+                select(ProductModel.core_group, func.count(ProductModel.id))
+                .where(ProductModel.core_group.in_(['A', 'B', 'C', 'D', 'E']))
+                .group_by(ProductModel.core_group)
+                .order_by(ProductModel.core_group)
+            )
+            core_group_counts = core_group_summary.all()
+            
+            logger.info("Core group import summary:")
+            for core_group, count in core_group_counts:
+                logger.info(f"  Core Group {core_group}: {count} products")
             
     except Exception as e:
         logger.error(f"Failed to import products from parquet: {e}")

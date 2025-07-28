@@ -35,13 +35,14 @@ async def get_products_by_core_range(
     Args:
         distributor_id: Filter by distributor ID
         brand_id: Filter by brand ID
-        core_groups: Comma-separated list of core group codes (e.g., "A,B,C")
+        core_groups: Comma-separated list of core group codes (e.g., "A,B,C"). 
+                    If not specified, defaults to "A,B,C,D,E"
         class_id: Filter by CTC class ID
         type_id: Filter by CTC type ID
         category_id: Filter by CTC category ID
         
     Returns:
-        List of products matching the criteria
+        List of products matching the criteria. By default, only returns products with core groups A-E.
     """
     # Parse core_groups string into list
     core_groups_list = None

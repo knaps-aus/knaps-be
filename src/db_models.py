@@ -72,7 +72,16 @@ class ProductModel(Base):
     rebate_claims = relationship("RebateClaim", back_populates="product")
 
     # CTC relationships
-    ctc_categories = relationship("CTCCategory", back_populates="product")
+    ctc_class_id = Column(Integer, ForeignKey("ctc_classes.id"), nullable=True)
+    ctc_type_id = Column(Integer, ForeignKey("ctc_types.id"), nullable=True)
+    ctc_category_id = Column(Integer, ForeignKey("ctc_categories.id"), nullable=True)
+    
+    # One-way relationships from CTC levels to products
+    ctc_class = relationship("CTCClass", foreign_keys=[ctc_class_id], back_populates="products")
+    ctc_type = relationship("CTCType", foreign_keys=[ctc_type_id], back_populates="products")
+    ctc_category = relationship("CTCCategory", foreign_keys=[ctc_category_id], back_populates="products")
+
+    
     attribute_values = relationship("ProductAttributeValue", back_populates="product")
     my_price = relationship("MyPrice", back_populates="product", uselist=False, cascade="all, delete-orphan")
 
@@ -162,6 +171,7 @@ class CTCClass(Base):
     features_benefits = relationship("ClassFeaturesBenefits", back_populates="class_", cascade="all, delete-orphan")
     type_features_benefits = relationship("TypeFeaturesBenefits", back_populates="class_", cascade="all, delete-orphan")
     category_features_benefits = relationship("CategoryFeaturesBenefits", back_populates="class_", cascade="all, delete-orphan")
+    products = relationship("ProductModel", foreign_keys="ProductModel.ctc_class_id", back_populates="ctc_class")
 
     # Indexes
     __table_args__ = (
@@ -203,6 +213,7 @@ class CTCType(Base):
     categories = relationship("CTCCategory", back_populates="type_", cascade="all, delete-orphan")
     features_benefits = relationship("TypeFeaturesBenefits", back_populates="type_", cascade="all, delete-orphan")
     category_features_benefits = relationship("CategoryFeaturesBenefits", back_populates="type_", cascade="all, delete-orphan")
+    products = relationship("ProductModel", foreign_keys="ProductModel.ctc_type_id", back_populates="ctc_type")
 
     # Indexes
     __table_args__ = (
@@ -249,7 +260,7 @@ class CTCCategory(Base):
 
     # Relationships
     type_ = relationship("CTCType", back_populates="categories")
-    product = relationship("ProductModel", back_populates="ctc_categories")
+    products = relationship("ProductModel", foreign_keys="ProductModel.ctc_category_id", back_populates="ctc_category")
 
     # Attributes for categories (level 3)
     attributes = relationship(
@@ -795,6 +806,7 @@ class RebateAgreement(Base):
     # NEW FIELDS for scraped deals integration
     # Deal classification
     deal_type_id = Column(Integer, ForeignKey("deal_types.id"), nullable=True)
+    deal_value_type_id = Column(Integer, ForeignKey("deal_value_types.id"), nullable=True)
     deal_source_id = Column(Integer, ForeignKey("deal_sources.id"), nullable=True)
     
     # Deal-specific pricing information
@@ -824,23 +836,29 @@ class RebateAgreement(Base):
     deleted_at = Column(DateTime, nullable=True)
     deleted_by = Column(String, nullable=True)
 
-    # Relationships (existing)
-    products = relationship(
-        "RebateAgreementProduct", back_populates="agreement", cascade="all, delete-orphan"
-    )
+    
+    # CTC Relationships 
+    product_class_id = Column(Integer, ForeignKey("ctc_classes.id"), nullable=True)
+    product_type_id = Column(Integer, ForeignKey("ctc_types.id"), nullable=True)
+    product_category_id = Column(Integer, ForeignKey("ctc_categories.id"), nullable=True)
+
+    # Brand and Product Relationships
+    brand_id = Column(Integer, ForeignKey("brands.id"), nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+
+    # Deal specific relationships
+    calculated_on_price_level_id = Column(Integer, ForeignKey("price_level_types.id"), nullable=True)
+
+    # Rebate specific relationships
     tiers = relationship(
         "RebateTier", back_populates="agreement", cascade="all, delete-orphan"
     )
     claims = relationship(
         "RebateClaim", back_populates="agreement", cascade="all, delete-orphan"
     )
-    
-    # NEW RELATIONSHIPS
-    deal_type = relationship("DealType")
-    deal_source = relationship("DealSource")
-    price_level_type = relationship("PriceLevelType")
-    deal_calculations = relationship("DealCalculation", back_populates="rebate_agreement")
-
+    products = relationship(
+        "RebateAgreementProduct", back_populates="agreement", cascade="all, delete-orphan"
+    )
 
 class RebateAgreementProduct(Base):
     __tablename__ = "rebate_agreement_products"
@@ -891,7 +909,7 @@ class RebateTier(Base):
     agreement = relationship("RebateAgreement", back_populates="tiers")
     
     # NEW RELATIONSHIPS
-    value_type = relationship("DealValueType")
+    value_type = relationship("DealValueType", back_populates="rebate_tiers")
     calculated_on_price_level = relationship("PriceLevelType")
 
 
@@ -929,8 +947,8 @@ class RebateClaim(Base):
     product = relationship("ProductModel", back_populates="rebate_claims")
     
     # NEW RELATIONSHIPS
-    deal_calculation = relationship("DealCalculation")
-    deal_value_type = relationship("DealValueType")
+    deal_calculation = relationship("DealCalculation", back_populates="rebate_claims")
+    deal_value_type = relationship("DealValueType", back_populates="rebate_claims")
 
 
 class DealValueType(Base):
@@ -1002,7 +1020,7 @@ class DealCalculation(Base):
     status = Column(Enum("pending", "approved", "rejected", "paid", name="calculation_statuses"), default="pending", nullable=False)
     
     # Relationships
-    rebate_agreement = relationship("RebateAgreement", back_populates="deal_calculations")
+    rebate_agreement = relationship("RebateAgreement")  
     product = relationship("ProductModel")
     deal_value_type = relationship("DealValueType", back_populates="deal_calculations")
     rebate_claims = relationship("RebateClaim", back_populates="deal_calculation")
@@ -1204,7 +1222,7 @@ class PriceLevelType(Base):
     created = Column(DateTime, nullable=False)
     deleted_by = Column(String, nullable=True)
     deleted = Column(DateTime, nullable=True)
-    code = Column(String, unique=True, nullable=False)
+    code = Column(String, unique=False, nullable=False)
     name = Column(String, nullable=False)
     store = Column(String, nullable=False)
     is_incl = Column(Boolean, nullable=False, default=False)

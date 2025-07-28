@@ -89,7 +89,10 @@ async def search_rebate_agreements(
     status: Optional[str] = None,
     agreement_type: Optional[str] = None,
     deal_source_id: Optional[int] = None,
-    store: Optional[str] = None
+    store: Optional[str] = None,
+    product_class_id: Optional[int] = None,
+    product_type_id: Optional[int] = None,
+    product_category_id: Optional[int] = None
 ):
     """
     Search rebate agreements by brand, distributor, deal type, and status.
@@ -103,7 +106,10 @@ async def search_rebate_agreements(
             status=status,
             deal_type_id=deal_type_id,
             deal_source_id=deal_source_id,
-            store=store
+            store=store,
+            product_class_id=product_class_id,
+            product_type_id=product_type_id,
+            product_category_id=product_category_id
         )
     else:
         return await storage.get_rebate_agreements(
@@ -112,8 +118,95 @@ async def search_rebate_agreements(
             status=status,
             deal_type_id=deal_type_id,
             deal_source_id=deal_source_id,
-            store=store
+            store=store,
+            product_class_id=product_class_id,
+            product_type_id=product_type_id,
+            product_category_id=product_category_id
         )
+
+@router.get("/agreements/product/{product_id}", response_model=List[RebateAgreementRead])
+async def get_rebates_by_product(
+    product_id: int,
+    agreement_type: Optional[str] = None,
+    distributor_id: Optional[int] = None,
+    status: Optional[str] = None,
+    deal_type_id: Optional[int] = None,
+    deal_source_id: Optional[int] = None,
+    store: Optional[str] = None,
+    active_only: bool = True
+):
+    """
+    Get all rebate agreements that apply to a specific product.
+    
+    This endpoint returns rebates that apply to the product either:
+    1. Directly through product association
+    2. Through category association (if the product belongs to a category that has rebates)
+    
+    Query Parameters:
+    - agreement_type: Filter by agreement type (vendor/customer)
+    - distributor_id: Filter by distributor
+    - status: Filter by agreement status
+    - deal_type_id: Filter by deal type
+    - deal_source_id: Filter by deal source
+    - store: Filter by store
+    - active_only: Show only active agreements (default: True)
+    
+    Path Parameters:
+    - product_id: The ID of the product to search for rebates
+    """
+    return await storage.get_rebate_agreements_by_product(
+        product_id=product_id,
+        agreement_type=agreement_type,
+        distributor_id=distributor_id,
+        status=status,
+        deal_type_id=deal_type_id,
+        deal_source_id=deal_source_id,
+        store=store,
+        active_only=active_only
+    )
+
+@router.get("/agreements/brand/{brand_id}/apply", response_model=List[RebateAgreementRead])
+async def apply_deals_by_brand(
+    brand_id: int,
+    agreement_type: Optional[str] = None,
+    distributor_id: Optional[int] = None,
+    status: Optional[str] = None,
+    deal_type_id: Optional[int] = None,
+    deal_source_id: Optional[str] = None,
+    store: Optional[str] = None,
+    active_only: bool = True
+):
+    """
+    Apply deals based on brand through distributor relationships.
+    
+    This endpoint finds rebate agreements that apply to a brand by:
+    1. Finding the brand's distributor
+    2. Finding all rebate agreements for that distributor that are brand-type deals
+    3. Optionally filtering by other criteria
+    
+    This is particularly useful for brand rebate deals where all products of a brand
+    are eligible for the same rebate agreement.
+    
+    Args:
+        brand_id: The ID of the brand to find deals for
+        agreement_type: Optional filter by agreement type (vendor/customer)
+        distributor_id: Optional filter by distributor (overrides brand's distributor)
+        status: Optional filter by agreement status
+        deal_type_id: Optional filter by deal type
+        deal_source_id: Optional filter by deal source
+        store: Optional filter by store
+        active_only: Show only active agreements
+    """
+    return await storage.apply_deals_by_brand(
+        brand_id=brand_id,
+        agreement_type=agreement_type,
+        distributor_id=distributor_id,
+        status=status,
+        deal_type_id=deal_type_id,
+        deal_source_id=deal_source_id,
+        store=store,
+        active_only=active_only
+    )
 
 @router.get("/agreements/{agreement_id}", response_model=RebateAgreementRead)
 async def get_rebate_agreement(agreement_id: int):

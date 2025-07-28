@@ -7,9 +7,11 @@ aiosqlite
 httpx
 pydantic-settings
 pyjwt
-pandas 
+scikit-learn
+spacy
+pandas==2.2.2
+numpy==2.1.1
 pyarrow
-numpy
 alembic
 requests
 aiohttp
