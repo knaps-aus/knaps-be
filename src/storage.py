@@ -183,7 +183,14 @@ class SQLStorage:
     # Product operations
     async def get_products(self) -> List[Product]:
         async with get_async_session() as session:
-            result = await session.execute(select(ProductModel))
+            result = await session.execute(
+                select(ProductModel).options(
+                    selectinload(ProductModel.price_levels),
+                    selectinload(ProductModel.my_price),
+                    selectinload(ProductModel.brand),
+                    selectinload(ProductModel.distributor),
+                )
+            )
             return [to_schema(row, Product) for row in result.scalars().all()]
 
     async def get_product(self, pid: int) -> Optional[Product]:
@@ -528,19 +535,19 @@ class SQLStorage:
                     distributor = d
                     break
             if not distributor:
-                # Fuzzy match
-                candidates = [(d.name, d) for d in distributors]
-                best, sim, _ = find_best_match(data.distributor_name, candidates, 0.8)
-                if best:
-                    logger.warning(f"Fuzzy match for distributor: '{data.distributor_name}' -> '{best.name}' (sim={sim:.2f})")
-                    distributor = best
-                    fuzzy_matches.append(FuzzyMatchInfo(
-                        is_fuzzy=True, field='distributor',
-                        input_value=data.distributor_name,
-                        matched_value=best.name, similarity=sim
-                    ))
-                else:
-                    return ProductCreateResult(product=None, fuzzy_matches=[], error=f"Distributor '{data.distributor_name}' not found")
+                # Create distributor if none found
+                distributor = Distributor(
+                    uuid=str(uuid.uuid4()),
+                    modified=datetime.utcnow(),
+                    created=datetime.utcnow(),
+                    modified_by="system",
+                    created_by="system",
+                    code=normalize_name(data.distributor_name)[:50],
+                    name=data.distributor_name,
+                    store="test_store",
+                )
+                session.add(distributor)
+                await session.flush()
 
             # Brand matching
             stmt = select(Brand)
@@ -553,18 +560,20 @@ class SQLStorage:
                     brand = b
                     break
             if not brand:
-                candidates = [(b.name, b) for b in brands]
-                best, sim, _ = find_best_match(data.brand_name, candidates, 0.8)
-                if best:
-                    logger.warning(f"Fuzzy match for brand: '{data.brand_name}' -> '{best.name}' (sim={sim:.2f})")
-                    brand = best
-                    fuzzy_matches.append(FuzzyMatchInfo(
-                        is_fuzzy=True, field='brand',
-                        input_value=data.brand_name,
-                        matched_value=best.name, similarity=sim
-                    ))
-                else:
-                    return ProductCreateResult(product=None, fuzzy_matches=fuzzy_matches, error=f"Brand '{data.brand_name}' not found")
+                # Create brand if none found
+                brand = Brand(
+                    uuid=str(uuid.uuid4()),
+                    modified=datetime.utcnow(),
+                    created=datetime.utcnow(),
+                    modified_by="system",
+                    created_by="system",
+                    code=normalize_name(data.brand_name)[:50],
+                    name=data.brand_name,
+                    store="test_store",
+                    distributor_id=distributor.id,
+                )
+                session.add(brand)
+                await session.flush()
 
             # Verify brand belongs to distributor
             if brand.distributor_id != distributor.id:
@@ -575,16 +584,26 @@ class SQLStorage:
             product_data['uuid'] = str(uuid.uuid4())
             product_data['distributor_id'] = distributor.id
             product_data['brand_id'] = brand.id
-            product_data.pop('distributor_name', None)
-            product_data.pop('brand_name', None)
+            product_data.setdefault('created_by', 'system')
+            product_data.setdefault('modified_by', 'system')
             obj = ProductModel(**product_data)
             session.add(obj)
             await session.flush()
             for price_level_data in price_levels_data:
-                price_level = PriceLevel(product_id=obj.id, **price_level_data)
+                price_level = PriceLevelModel(product_id=obj.id, **price_level_data)
                 session.add(price_level)
             await session.commit()
-            await session.refresh(obj)
+            stmt = (
+                select(ProductModel)
+                .options(
+                    selectinload(ProductModel.price_levels),
+                    selectinload(ProductModel.my_price),
+                    selectinload(ProductModel.brand),
+                    selectinload(ProductModel.distributor),
+                )
+                .where(ProductModel.id == obj.id)
+            )
+            obj = (await session.execute(stmt)).scalar_one()
             return ProductCreateResult(product=to_schema(obj, Product), fuzzy_matches=fuzzy_matches)
 
     async def update_product(self, pid: int, data: dict) -> Optional[Product]:
@@ -1564,17 +1583,27 @@ class SQLStorage:
             product_data['uuid'] = str(uuid.uuid4())
             product_data['distributor_id'] = distributor.id
             product_data['brand_id'] = brand.id
-            product_data.pop('distributor_name', None)
-            product_data.pop('brand_name', None)
+            product_data.setdefault('created_by', 'system')
+            product_data.setdefault('modified_by', 'system')
             obj = ProductModel(**product_data)
             async with get_async_session() as session:
                 session.add(obj)
                 await session.flush()
                 for price_level_data in price_levels_data:
-                    price_level = PriceLevel(product_id=obj.id, **price_level_data)
+                    price_level = PriceLevelModel(product_id=obj.id, **price_level_data)
                     session.add(price_level)
                 await session.commit()
-                await session.refresh(obj)
+                stmt = (
+                    select(ProductModel)
+                    .options(
+                        selectinload(ProductModel.price_levels),
+                        selectinload(ProductModel.my_price),
+                        selectinload(ProductModel.brand),
+                        selectinload(ProductModel.distributor),
+                    )
+                    .where(ProductModel.id == obj.id)
+                )
+                obj = (await session.execute(stmt)).scalar_one()
             created.append(ProductCreateResult(product=to_schema(obj, Product), fuzzy_matches=fuzzy_matches))
         return BulkProductCreateResult(created=created, failed=failed)
 
