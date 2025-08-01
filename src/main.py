@@ -54,7 +54,14 @@ logger = logging.getLogger('uvicorn.error')
 # TODO add for porduction env 
 # app.add_middleware(HTTPSRedirectMiddleware)
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["example.com", "*.example.com", "127.0.0.1", "localhost", "0.0.0.0"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=[
+    "example.com",
+    "*.example.com",
+    "127.0.0.1",
+    "localhost",
+    "0.0.0.0",
+    "testserver",
+])
 # # CORS configuration
 
 origins = [
